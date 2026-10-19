@@ -11,6 +11,29 @@ y qué borrar antes de reciclar una máquina, por ejemplo para convertirla en un
 
 ## Uso
 
+**Con doble click** se abre una pantalla de inicio para elegir qué revisar: la carpeta personal, cada
+disco o pendrive conectado (con su tamaño y espacio libre), la demo, u otra carpeta escribiendo la
+ruta. Al salir de un escaneo con `q` se vuelve a esa pantalla; `q` otra vez cierra el programa.
+
+```
+╭ analizador 0.9.1 ──────────────────────────────────────────────────────────────────────╮
+│¿Qué querés revisar? El escaneo no modifica nada.                                       │
+│                                                                                        │
+│► Mi carpeta personal  C:\Users\franv               lo más importante para revisar      │
+│  Disco                C:\                          931,0 GB · libres 108,6 GB          │
+│  Disco                D:\                          1,8 TB · libres 1,1 TB              │
+│  Probar con la demo                                una carpeta de prueba con de todo   │
+│  Otra carpeta…                                     escribís o pegás la ruta            │
+│                                                                                        │
+│↑↓ elegir  Enter abrir  r buscar discos de nuevo  q salir                               │
+╰────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+Si Windows avisa "Windows protegió su PC", es porque el `.exe` no está firmado: **Más información →
+Ejecutar de todas formas**.
+
+**Desde una consola** también se puede hacer todo con comandos (`analizador --help` los lista):
+
 ```sh
 analizador ver C:\                      # interfaz de dos paneles
 analizador ver ~ --iconos emoji         # íconos: simples (default), emoji o nerd
