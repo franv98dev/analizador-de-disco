@@ -12,9 +12,12 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::app::App;
+use crate::demo;
 use crate::escaner::{Escaneo, Opciones, escanear};
 use crate::iconos::Iconos;
+use crate::inicio::{Eleccion, Inicio, carpeta_personal};
 use crate::ui;
+use crate::unidades;
 
 pub fn ejecutar(ruta: &Path, opciones: Opciones, iconos: Iconos) -> io::Result<()> {
     // Antes de tomar la terminal, para que el error se lea normal.
@@ -38,6 +41,70 @@ pub fn ejecutar(ruta: &Path, opciones: Opciones, iconos: Iconos) -> io::Result<(
     let resultado = correr(&mut terminal, ruta, opciones, iconos);
     ratatui::restore();
     resultado
+}
+
+/// Sin argumentos (doble click): primero la pantalla de inicio para elegir qué revisar, y
+/// al salir de un escaneo se vuelve a ella en vez de cerrar la ventana.
+pub fn inicio(opciones: Opciones, iconos: Iconos) -> io::Result<()> {
+    if !io::stdout().is_terminal() {
+        return Err(io::Error::other(
+            "la interfaz necesita una terminal; probá `analizador --help`",
+        ));
+    }
+    let mut terminal = ratatui::try_init().map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("no se pudo abrir la interfaz en esta terminal: {err}"),
+        )
+    })?;
+    let resultado = pantalla_de_inicio(&mut terminal, opciones, iconos);
+    ratatui::restore();
+    resultado
+}
+
+fn pantalla_de_inicio(
+    terminal: &mut DefaultTerminal,
+    opciones: Opciones,
+    iconos: Iconos,
+) -> io::Result<()> {
+    let nuevo = || Inicio::new(unidades::detectar(), carpeta_personal());
+    let mut ini = nuevo();
+    loop {
+        terminal.draw(|f| ui::dibujar_inicio(f, &mut ini))?;
+        let Event::Key(k) = event::read()? else {
+            continue;
+        };
+        if k.kind != KeyEventKind::Press {
+            continue;
+        }
+        if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(());
+        }
+        let ruta = match ini.tecla(k.code) {
+            None => continue,
+            Some(Eleccion::Salir) => return Ok(()),
+            Some(Eleccion::Actualizar) => {
+                ini = nuevo();
+                continue;
+            }
+            Some(Eleccion::Abrir(ruta)) => ruta,
+            Some(Eleccion::Demo) => {
+                let carpeta = std::env::temp_dir().join("analizador-demo");
+                if let Err(err) = demo::crear(&carpeta) {
+                    ini.mensaje = Some(format!("No se pudo crear la demo: {err}"));
+                    continue;
+                }
+                carpeta
+            }
+        };
+        if !ruta.is_dir() {
+            ini.mensaje = Some(format!("{} no existe o no es una carpeta", ruta.display()));
+            continue;
+        }
+        if let Err(err) = correr(terminal, &ruta, opciones.clone(), iconos) {
+            ini.mensaje = Some(format!("{}: {err}", ruta.display()));
+        }
+    }
 }
 
 fn correr(

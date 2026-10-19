@@ -18,6 +18,8 @@ pub mod formato;
 pub mod fotos;
 pub mod iconos;
 pub mod informe;
+pub mod inicio;
 pub mod resumen;
 pub mod tui;
 pub mod ui;
+pub mod unidades;

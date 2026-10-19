@@ -1,6 +1,6 @@
 [package]
 name = "analizador-de-disco"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 description = "Escanea un disco y separa lo que creó una persona (fotos, videos, documentos, proyectos) de lo que es sistema o programas. Solo lectura."
 license = "MIT"
@@ -26,3 +26,7 @@ tempfile = "3"
 lto = true
 codegen-units = 1
 strip = true
+
+# Para saber si una unidad es un disco fijo, un pendrive o de red (pantalla de inicio).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

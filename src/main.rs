@@ -24,8 +24,9 @@ use analizador_de_disco::{demo, exportar, informe, tui};
 #[derive(Parser)]
 #[command(name = "analizador", version)]
 struct Cli {
+    /// Sin comando (por ejemplo, con doble click) se abre la pantalla de inicio
     #[command(subcommand)]
-    comando: Comando,
+    comando: Option<Comando>,
 }
 
 #[derive(Subcommand)]
@@ -201,7 +202,18 @@ struct Comunes {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let resultado = match cli.comando {
+    let Some(comando) = cli.comando else {
+        // Con doble click la ventana se cierra sola al terminar: si hubo un error,
+        // se espera un Enter para que se pueda leer.
+        if let Err(err) = tui::inicio(Opciones::default(), Iconos::default()) {
+            eprintln!("error: {err}");
+            eprintln!("Presioná Enter para cerrar.");
+            let _ = io::stdin().read_line(&mut String::new());
+            return ExitCode::FAILURE;
+        }
+        return ExitCode::SUCCESS;
+    };
+    let resultado = match comando {
         Comando::Escanear { ruta, comunes } => ejecutar(&ruta, &comunes),
         Comando::Ver { ruta, interfaz } => tui::ejecutar(
             &ruta,

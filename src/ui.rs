@@ -17,6 +17,7 @@ use crate::arbol::Tipo;
 use crate::borrable::{self, Motivo};
 use crate::categoria::Categoria;
 use crate::formato::{duracion, fecha, miles, porcentaje, relativa, tamano};
+use crate::inicio::{Inicio, Opcion};
 
 const ACENTO: Color = Color::Cyan;
 const MARCADO: Color = Color::LightGreen;
@@ -959,6 +960,99 @@ fn modal_exportar(f: &mut Frame, app: &App) {
             .block(bloque(" Exportar informe ", true)),
         area,
     );
+}
+
+/// Pantalla de inicio: qué revisar (cuando se abre con doble click).
+pub fn dibujar_inicio(f: &mut Frame, inicio: &mut Inicio) {
+    let filas: Vec<Row> = inicio
+        .opciones
+        .iter()
+        .map(|o| match o {
+            Opcion::Personal(p) => Row::new([
+                Cell::from("Mi carpeta personal").bold(),
+                Cell::from(p.display().to_string()),
+                Cell::from("lo más importante para revisar").fg(APAGADO),
+            ]),
+            Opcion::Unidad(u) => {
+                let espacio = match (u.total, u.libre) {
+                    (Some(t), Some(l)) => format!("{} · libres {}", tamano(t), tamano(l)),
+                    _ => String::new(),
+                };
+                Row::new([
+                    Cell::from(u.tipo.nombre()),
+                    Cell::from(u.ruta.display().to_string()).bold(),
+                    Cell::from(espacio).fg(APAGADO),
+                ])
+            }
+            Opcion::Demo => Row::new([
+                Cell::from("Probar con la demo").fg(ACENTO),
+                Cell::from(""),
+                Cell::from("una carpeta de prueba con de todo").fg(APAGADO),
+            ]),
+            Opcion::Otra => Row::new([
+                Cell::from("Otra carpeta…"),
+                Cell::from(""),
+                Cell::from("escribís o pegás la ruta").fg(APAGADO),
+            ]),
+        })
+        .collect();
+
+    let mut abajo = Vec::new();
+    if let Some(texto) = &inicio.escribiendo {
+        abajo.push(Line::raw("Carpeta (podés pegarla con clic derecho):"));
+        abajo.push(Line::from(vec![
+            Span::raw("> ").fg(ACENTO),
+            Span::raw(texto.clone()),
+            Span::raw("█").fg(ACENTO),
+        ]));
+        abajo.push(Line::raw("Enter: abrir  ·  Esc: volver").fg(APAGADO));
+    } else if let Some(m) = &inicio.mensaje {
+        abajo.push(Line::raw(m.clone()).fg(Color::Red));
+    }
+    let teclas = Line::from(vec![
+        Span::raw("↑↓").fg(ACENTO).bold(),
+        Span::raw(" elegir  ").fg(APAGADO),
+        Span::raw("Enter").fg(ACENTO).bold(),
+        Span::raw(" abrir  ").fg(APAGADO),
+        Span::raw("r").fg(ACENTO).bold(),
+        Span::raw(" buscar discos de nuevo  ").fg(APAGADO),
+        Span::raw("q").fg(ACENTO).bold(),
+        Span::raw(" salir").fg(APAGADO),
+    ]);
+
+    let alto = (inicio.opciones.len() as u16 + abajo.len() as u16 + 7).min(f.area().height);
+    let area = centrado(f.area(), 90.min(f.area().width), alto);
+    let titulo = format!(" analizador {} ", env!("CARGO_PKG_VERSION"));
+    let b = bloque(&titulo, true);
+    let dentro = b.inner(area);
+    f.render_widget(b, area);
+    let [pregunta, lista, mensajes, pie] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(abajo.len() as u16),
+        Constraint::Length(2),
+    ])
+    .areas(dentro);
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::raw("¿Qué querés revisar? El escaneo no modifica nada.").bold(),
+            Line::raw(""),
+        ]),
+        pregunta,
+    );
+    let tabla = Table::new(
+        filas,
+        [
+            Constraint::Length(20),
+            Constraint::Length(28),
+            Constraint::Fill(1),
+        ],
+    )
+    .row_highlight_style(resaltado(true))
+    .highlight_symbol("► ");
+    f.render_stateful_widget(tabla, lista, &mut inicio.tabla);
+    f.render_widget(Paragraph::new(abajo), mensajes);
+    f.render_widget(Paragraph::new(vec![Line::raw(""), teclas]), pie);
 }
 
 fn bloque(titulo: &str, enfocado: bool) -> Block<'static> {
