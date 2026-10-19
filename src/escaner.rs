@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::categoria::{Categoria, clasificar, es_marcador_proyecto};
-use crate::exclusiones::{Exclusiones, niveles_revisar, puede_ser_proyecto};
+use crate::exclusiones::{Exclusiones, es_carpeta_de_usuario, niveles_revisar, puede_ser_proyecto};
 
 #[derive(Debug, Clone)]
 pub struct Archivo {
@@ -170,6 +170,12 @@ fn recorrer<'s>(s: &rayon::Scope<'s>, dir: PathBuf, mut ctx: Contexto, comun: &'
         ctx.proyecto = Some(Arc::from(dir.as_path()));
     }
 
+    // Los archivos con punto sueltos en la carpeta personal son configuración de programas:
+    // "revisar", igual que las carpetas con punto.
+    let configuracion: Option<Arc<Path>> =
+        (ctx.revisar.is_none() && ctx.proyecto.is_none() && es_carpeta_de_usuario(&dir))
+            .then(|| Arc::from(dir.as_path()));
+
     for entrada in entradas {
         let ruta = entrada.path();
         let tipo = match entrada.file_type() {
@@ -215,7 +221,15 @@ fn recorrer<'s>(s: &rayon::Scope<'s>, dir: PathBuf, mut ctx: Contexto, comun: &'
                         tamano: meta.len(),
                         modificado: meta.modified().ok(),
                         categoria,
-                        revisar: ctx.revisar.as_ref().map(|(g, _)| Arc::clone(g)),
+                        revisar: ctx
+                            .revisar
+                            .as_ref()
+                            .map(|(g, _)| Arc::clone(g))
+                            .or_else(|| {
+                                configuracion.clone().filter(|_| {
+                                    entrada.file_name().to_string_lossy().starts_with('.')
+                                })
+                            }),
                         proyecto: ctx.proyecto.clone(),
                     });
                 }

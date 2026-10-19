@@ -7,6 +7,11 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 
+use analizador_de_disco::acciones::{
+    self, Elemento, Modo, OpcionesOrdenar, Plan, ProgresoAccion, Tipo,
+};
+use analizador_de_disco::borrable::{self, Motivo};
+use analizador_de_disco::categoria::Categoria;
 use analizador_de_disco::duplicados::{self, Duplicados, Progreso};
 use analizador_de_disco::escaner::{Escaneo, Opciones, escanear};
 use analizador_de_disco::formato::{duracion, miles, relativa, tamano};
@@ -14,7 +19,8 @@ use analizador_de_disco::iconos::Iconos;
 use analizador_de_disco::{demo, exportar, informe, tui};
 
 /// Escanea un disco y separa lo que creó una persona de lo que es sistema o programas.
-/// Solo lectura: nunca borra ni modifica nada.
+/// El escaneo es de solo lectura. Las acciones (ordenar, para-borrar, deshacer) muestran
+/// antes qué van a hacer y piden confirmación; nunca borran nada.
 #[derive(Parser)]
 #[command(name = "analizador", version)]
 struct Cli {
@@ -62,6 +68,54 @@ enum Comando {
         #[arg(long)]
         hilos: Option<usize>,
     },
+    /// Ordena lo que conservás en un destino: Fotos/2019/…, Documentos/…, Proyectos/…
+    /// (mueve por defecto; muestra antes qué va a hacer)
+    Ordenar {
+        ruta: PathBuf,
+        /// Carpeta de destino (por ejemplo, un disco externo)
+        #[arg(long)]
+        destino: PathBuf,
+        /// Qué categorías (por defecto, todas menos instaladores)
+        #[arg(long, value_enum, value_delimiter = ',')]
+        categorias: Vec<CategoriaArg>,
+        /// Copiar en vez de mover (los originales quedan donde están)
+        #[arg(long)]
+        copiar: bool,
+        /// Ordenar también los instaladores
+        #[arg(long)]
+        incluir_instaladores: bool,
+        /// No buscar duplicados antes (más rápido, pero se ordenan todas las copias)
+        #[arg(long)]
+        sin_duplicados: bool,
+        /// No preguntar antes de hacerlo (para scripts)
+        #[arg(long)]
+        si: bool,
+        #[arg(long)]
+        hilos: Option<usize>,
+    },
+    /// Mueve lo probablemente borrable a <ruta>/_para_borrar (que después borrás vos)
+    ParaBorrar {
+        ruta: PathBuf,
+        /// Qué motivos (por defecto: temporal, cache e instalador)
+        #[arg(long, value_enum, value_delimiter = ',')]
+        motivos: Vec<MotivoArg>,
+        /// Mandar también las copias duplicadas (busca duplicados antes)
+        #[arg(long)]
+        duplicados: bool,
+        /// No preguntar antes de hacerlo (para scripts)
+        #[arg(long)]
+        si: bool,
+        #[arg(long)]
+        hilos: Option<usize>,
+    },
+    /// Devuelve todo a su lugar, según el registro de _para_borrar o de un ordenar
+    Deshacer {
+        /// La carpeta escaneada, su _para_borrar, o un ordenar-….csv de _analizador
+        ruta: PathBuf,
+        /// No preguntar antes de hacerlo (para scripts)
+        #[arg(long)]
+        si: bool,
+    },
     /// Crea una carpeta de prueba con archivos de cada tipo y la escanea
     Demo {
         /// Dónde crearla (por defecto, en la carpeta temporal del sistema)
@@ -75,6 +129,54 @@ enum Comando {
         #[arg(long, value_enum, default_value_t)]
         iconos: Iconos,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum CategoriaArg {
+    Fotos,
+    Videos,
+    #[value(alias = "música")]
+    Musica,
+    Grabaciones,
+    Documentos,
+    Proyectos,
+    Comprimidos,
+    Instaladores,
+    Otros,
+}
+
+impl From<CategoriaArg> for Categoria {
+    fn from(c: CategoriaArg) -> Self {
+        match c {
+            CategoriaArg::Fotos => Categoria::Fotos,
+            CategoriaArg::Videos => Categoria::Videos,
+            CategoriaArg::Musica => Categoria::Musica,
+            CategoriaArg::Grabaciones => Categoria::Grabaciones,
+            CategoriaArg::Documentos => Categoria::Documentos,
+            CategoriaArg::Proyectos => Categoria::Proyectos,
+            CategoriaArg::Comprimidos => Categoria::Comprimidos,
+            CategoriaArg::Instaladores => Categoria::Instaladores,
+            CategoriaArg::Otros => Categoria::Otros,
+        }
+    }
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum MotivoArg {
+    Temporal,
+    #[value(alias = "caché")]
+    Cache,
+    Instalador,
+}
+
+impl From<MotivoArg> for Motivo {
+    fn from(m: MotivoArg) -> Self {
+        match m {
+            MotivoArg::Temporal => Motivo::Temporal,
+            MotivoArg::Cache => Motivo::Cache,
+            MotivoArg::Instalador => Motivo::Instalador,
+        }
+    }
 }
 
 #[derive(clap::Args)]
@@ -116,6 +218,35 @@ fn main() -> ExitCode {
             hilos,
         } => generar_informe(&ruta, &salida, si, duplicados, hilos),
         Comando::Duplicados { ruta, top, hilos } => mostrar_duplicados(&ruta, top, hilos),
+        Comando::Ordenar {
+            ruta,
+            destino,
+            categorias,
+            copiar,
+            incluir_instaladores,
+            sin_duplicados,
+            si,
+            hilos,
+        } => ordenar(
+            &ruta,
+            &destino,
+            &categorias,
+            OpcionesOrdenar {
+                modo: Some(if copiar { Modo::Copiar } else { Modo::Mover }),
+                incluir_instaladores,
+            },
+            !sin_duplicados,
+            si,
+            hilos,
+        ),
+        Comando::ParaBorrar {
+            ruta,
+            motivos,
+            duplicados,
+            si,
+            hilos,
+        } => para_borrar(&ruta, &motivos, duplicados, si, hilos),
+        Comando::Deshacer { ruta, si } => deshacer(&ruta, si),
         Comando::Demo {
             carpeta,
             ver,
@@ -184,25 +315,195 @@ fn generar_informe(
         println!("  ¡Ojo! {} ya existe y se va a sobrescribir.", p.display());
     }
 
-    if !si {
-        if !io::stdin().is_terminal() {
-            return Err(io::Error::other(
-                "no hay a quién preguntar; usá --si para confirmar sin preguntar",
-            ));
-        }
-        print!("¿Confirmás? [s/N] ");
-        io::stdout().flush()?;
-        let mut respuesta = String::new();
-        io::stdin().read_line(&mut respuesta)?;
-        if !matches!(respuesta.trim().to_lowercase().as_str(), "s" | "si" | "sí") {
-            println!("Cancelado, no se escribió nada.");
-            return Ok(());
-        }
+    if !confirmar(si)? {
+        println!("Cancelado, no se escribió nada.");
+        return Ok(());
     }
     let sobrescribir = !existentes.is_empty();
     exportar::escribir(&plan, &escaneo, dups.as_ref(), sobrescribir)?;
     println!("Listo.");
     Ok(())
+}
+
+/// Pregunta `¿Confirmás? [s/N]`. Sin terminal, solo sigue con `--si`.
+fn confirmar(si: bool) -> io::Result<bool> {
+    if si {
+        return Ok(true);
+    }
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::other(
+            "no hay a quién preguntar; usá --si para confirmar sin preguntar",
+        ));
+    }
+    print!("¿Confirmás? [s/N] ");
+    io::stdout().flush()?;
+    let mut respuesta = String::new();
+    io::stdin().read_line(&mut respuesta)?;
+    Ok(matches!(
+        respuesta.trim().to_lowercase().as_str(),
+        "s" | "si" | "sí"
+    ))
+}
+
+fn ordenar(
+    ruta: &Path,
+    destino: &Path,
+    categorias: &[CategoriaArg],
+    opciones: OpcionesOrdenar,
+    con_duplicados: bool,
+    si: bool,
+    hilos: Option<usize>,
+) -> io::Result<()> {
+    let escaneo = escanear_con_progreso(ruta, &Opciones { hilos })?;
+    let dups = if con_duplicados {
+        Some(duplicados_con_progreso(&escaneo, hilos)?)
+    } else {
+        None
+    };
+    let elegidas: Vec<Categoria> = categorias.iter().map(|&c| c.into()).collect();
+    let elementos: Vec<Elemento> = (0..escaneo.archivos.len() as u32)
+        .filter(|&i| {
+            let a = &escaneo.archivos[i as usize];
+            a.revisar.is_none() && (elegidas.is_empty() || elegidas.contains(&a.categoria))
+        })
+        .map(|i| Elemento::de(&escaneo, i))
+        .collect();
+    let mut opciones = opciones;
+    opciones.incluir_instaladores |= elegidas.contains(&Categoria::Instaladores);
+    eprintln!("Armando el plan (leyendo la fecha EXIF de las fotos)…");
+    let plan = acciones::planificar_ordenar(
+        &elementos,
+        &escaneo.raiz,
+        destino,
+        opciones,
+        dups.as_ref(),
+        chrono::Local::now(),
+    );
+    hacer(&plan, &escaneo.raiz, si)
+}
+
+fn para_borrar(
+    ruta: &Path,
+    motivos: &[MotivoArg],
+    con_duplicados: bool,
+    si: bool,
+    hilos: Option<usize>,
+) -> io::Result<()> {
+    let escaneo = escanear_con_progreso(ruta, &Opciones { hilos })?;
+    let dups = if con_duplicados {
+        Some(duplicados_con_progreso(&escaneo, hilos)?)
+    } else {
+        None
+    };
+    let mut elegidos: Vec<Motivo> = motivos.iter().map(|&m| m.into()).collect();
+    if elegidos.is_empty() {
+        elegidos = vec![Motivo::Temporal, Motivo::Cache, Motivo::Instalador];
+    }
+    if con_duplicados {
+        elegidos.push(Motivo::Duplicado);
+    }
+    let elementos: Vec<Elemento> = borrable::por_archivo(&escaneo, dups.as_ref())
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.as_ref().is_some_and(|(m, _)| elegidos.contains(m)))
+        .map(|(i, _)| Elemento::de(&escaneo, i as u32))
+        .collect();
+    let plan = acciones::planificar_para_borrar(&elementos, &escaneo.raiz);
+    hacer(&plan, &escaneo.raiz, si)
+}
+
+fn deshacer(ruta: &Path, si: bool) -> io::Result<()> {
+    let plan = acciones::planificar_deshacer(ruta)?;
+    let raiz = plan.destino.parent().unwrap_or(ruta).to_path_buf();
+    hacer(&plan, &raiz, si)
+}
+
+/// Muestra la vista previa, pide confirmación y ejecuta mostrando el avance.
+fn hacer(plan: &Plan, raiz: &Path, si: bool) -> io::Result<()> {
+    mostrar_plan(plan, raiz);
+    if !plan.problemas.is_empty() {
+        return Err(io::Error::other("no se puede seguir: no se hizo nada"));
+    }
+    if plan.operaciones.is_empty() {
+        println!("No hay nada para hacer.");
+        return Ok(());
+    }
+    if !confirmar(si)? {
+        println!("Cancelado, no se tocó nada.");
+        return Ok(());
+    }
+
+    let progreso = ProgresoAccion::default();
+    let terminado = AtomicBool::new(false);
+    let total = plan.operaciones.len() as u64;
+    let r = thread::scope(|s| {
+        if io::stderr().is_terminal() {
+            s.spawn(|| {
+                let mut err = io::stderr();
+                while !terminado.load(Ordering::Relaxed) {
+                    let _ = write!(
+                        err,
+                        "\r  {} de {} archivos · {} de {}   ",
+                        miles(progreso.hechos.load(Ordering::Relaxed)),
+                        miles(total),
+                        tamano(progreso.bytes.load(Ordering::Relaxed)),
+                        tamano(plan.bytes)
+                    );
+                    let _ = err.flush();
+                    thread::sleep(Duration::from_millis(200));
+                }
+                let _ = write!(err, "\r{:70}\r", "");
+            });
+        }
+        let r = acciones::ejecutar(plan, &progreso);
+        terminado.store(true, Ordering::Relaxed);
+        r
+    })?;
+
+    println!(
+        "\nListo: {} archivos ({}) en {}.",
+        miles(r.hechos as u64),
+        tamano(r.bytes),
+        duracion(r.duracion)
+    );
+    if r.renombrados > 0 {
+        println!(
+            "  {} quedaron con \" (2)\" porque apareció otro con el mismo nombre.",
+            miles(r.renombrados as u64)
+        );
+    }
+    if !r.fallidos.is_empty() {
+        println!("  No se pudieron hacer {}:", miles(r.fallidos.len() as u64));
+        for (op, err) in r.fallidos.iter().take(10) {
+            println!("    {}: {err}", op.origen.display());
+        }
+        if r.fallidos.len() > 10 {
+            println!(
+                "    … y {} más (están en el registro)",
+                r.fallidos.len() - 10
+            );
+        }
+    }
+    match plan.tipo {
+        Tipo::Deshacer => {}
+        Tipo::Ordenar(Modo::Copiar) => println!("  Registro: {}", plan.registro.display()),
+        _ => {
+            println!("  Registro: {}", plan.registro.display());
+            println!(
+                "  Para deshacer: analizador deshacer \"{}\"",
+                plan.registro.display()
+            );
+            println!("  Las carpetas que quedaron vacías no se borran.");
+        }
+    }
+    Ok(())
+}
+
+fn mostrar_plan(plan: &Plan, raiz: &Path) {
+    println!("\nVista previa (todavía no se hizo nada):");
+    for (_, linea) in acciones::describir(plan, raiz, 6) {
+        println!("  {linea}");
+    }
 }
 
 fn mostrar_duplicados(ruta: &Path, top: usize, hilos: Option<usize>) -> io::Result<()> {

@@ -10,7 +10,15 @@ use std::path::Path;
 const SIEMPRE_SISTEMA: &[(&str, &str)] = &[
     ("$recycle.bin", "papelera de Windows"),
     ("system volume information", "datos internos de Windows"),
+    // Las crea el propio analizador: no tiene sentido volver a contarlas ni a ofrecerlas.
+    (CARPETA_PARA_BORRAR, "ya está en _para_borrar"),
+    (CARPETA_REGISTROS, "registros del analizador"),
 ];
+
+/// Adonde van las cosas que se mandan a borrar (las borra el usuario, no el programa).
+pub const CARPETA_PARA_BORRAR: &str = "_para_borrar";
+/// Bitácoras de lo que se ordenó, para poder deshacerlo.
+pub const CARPETA_REGISTROS: &str = "_analizador";
 
 /// Se excluyen solo en la raíz de una unidad (o en la raíz del escaneo, para discos montados).
 /// Una carpeta "Windows" dentro de Documentos sigue siendo del usuario.
@@ -28,7 +36,7 @@ const RAIZ_WINDOWS: &[(&str, &str)] = &[
 const LINUX: &[&str] = &["/usr", "/proc", "/sys", "/dev", "/run", "/boot", "/var/lib"];
 
 /// Carpetas personales conocidas: un `package.json` suelto ahí no las vuelve proyecto.
-const CARPETAS_PERSONALES: &[&str] = &[
+pub const CARPETAS_PERSONALES: &[&str] = &[
     "documents",
     "documentos",
     "mis documentos",
@@ -137,6 +145,12 @@ fn es_carpeta_personal(norm: &str) -> bool {
     nombre_padre == "users" || nombre_padre == "home"
 }
 
+/// ¿Es la carpeta personal de un usuario (`C:\Users\papá`, `/home/fran`)? Sus archivos con
+/// punto (`.bash_history`, `.gitconfig`, `.claude.json`) son configuración de programas.
+pub fn es_carpeta_de_usuario(dir: &Path) -> bool {
+    es_carpeta_personal(&normalizar(dir))
+}
+
 /// ¿Puede esta carpeta ser la raíz de un proyecto? No lo son la raíz de un disco,
 /// la carpeta personal del usuario ni las carpetas personales conocidas, aunque
 /// tengan un `package.json` o un `.git` (pasa: repos de dotfiles, `npm install` por error).
@@ -203,6 +217,13 @@ mod tests {
     }
 
     #[test]
+    fn las_carpetas_del_propio_analizador_no_se_escanean() {
+        assert!(motivo(r"D:\", r"D:\_para_borrar").is_some());
+        assert!(motivo(r"D:\", r"D:\Ordenado\_analizador").is_some());
+        assert_eq!(motivo(r"D:\", r"D:\_para_borrar_no"), None);
+    }
+
+    #[test]
     fn excluye_carpetas_de_sistema_de_linux() {
         for ruta in [
             "/usr",
@@ -248,6 +269,16 @@ mod tests {
     #[test]
     fn appdata_no_es_sistema() {
         assert_eq!(motivo(r"C:\", r"C:\Users\fran\AppData"), None);
+    }
+
+    #[test]
+    fn carpeta_de_usuario() {
+        assert!(es_carpeta_de_usuario(Path::new(r"C:\Users\papa")));
+        assert!(es_carpeta_de_usuario(Path::new("/home/fran")));
+        assert!(!es_carpeta_de_usuario(Path::new(
+            r"C:\Users\papa\Documents"
+        )));
+        assert!(!es_carpeta_de_usuario(Path::new(r"C:\Users")));
     }
 
     #[test]

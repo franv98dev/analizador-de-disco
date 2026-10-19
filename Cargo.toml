@@ -14,6 +14,8 @@ path = "src/main.rs"
 blake3 = "1.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
+fs4 = "1"
+kamadak-exif = "0.6"
 ratatui = "0.30"
 rayon = "1"
 

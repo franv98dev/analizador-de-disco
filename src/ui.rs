@@ -10,14 +10,16 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
 
+use crate::acciones::{self, Modo, Nivel, Tipo as TipoAccion};
 use crate::antiguedad;
-use crate::app::{App, Derecha, Entrada, Exportar, Filtro, Panel, Pestana};
+use crate::app::{Accion, App, Derecha, Entrada, Exportar, Filtro, Panel, Pestana};
 use crate::arbol::Tipo;
 use crate::borrable::{self, Motivo};
 use crate::categoria::Categoria;
 use crate::formato::{duracion, fecha, miles, porcentaje, relativa, tamano};
 
 const ACENTO: Color = Color::Cyan;
+const MARCADO: Color = Color::LightGreen;
 const APAGADO: Color = Color::DarkGray;
 const REVISAR: Color = Color::Yellow;
 const PROYECTO: Color = Color::Green;
@@ -54,6 +56,9 @@ pub fn dibujar(f: &mut Frame, app: &mut App) {
     pie(f, app, abajo);
     if app.exportar.is_some() {
         modal_exportar(f, app);
+    }
+    if app.accion.is_some() {
+        modal_accion(f, app);
     }
 }
 
@@ -120,6 +125,19 @@ fn encabezado(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" · excluido ").fg(APAGADO),
         Span::raw(miles(app.escaneo.excluidos.len() as u64)),
     ]);
+    let mut linea = linea;
+    if !app.marcados.is_empty() {
+        linea.push_span(Span::raw(" · marcados ").fg(APAGADO));
+        linea.push_span(
+            Span::raw(format!(
+                "{} ({})",
+                miles(app.marcados.len() as u64),
+                tamano(app.marcados_bytes)
+            ))
+            .fg(MARCADO)
+            .bold(),
+        );
+    }
     f.render_widget(Paragraph::new(linea), area);
 }
 
@@ -131,16 +149,17 @@ fn panel_disco(f: &mut Frame, app: &mut App, area: Rect) {
 
     for e in &app.entradas {
         let fila = match *e {
-            Entrada::Subir => Row::new([Cell::from(format!("{} ..", ic.subir()))]).fg(APAGADO),
+            Entrada::Subir => {
+                Row::new([Cell::from(" "), Cell::from(format!("{} ..", ic.subir()))]).fg(APAGADO)
+            }
             Entrada::Carpeta(id) => {
                 let n = app.arbol.nodo(id);
                 match n.tipo {
                     // El motivo completo está en la pestaña Excluido.
-                    Tipo::Excluido(_) => Row::new([Cell::from(format!(
-                        "{} {}  (sistema)",
-                        ic.excluido(),
-                        n.nombre
-                    ))])
+                    Tipo::Excluido(_) => Row::new([
+                        Cell::from(" "),
+                        Cell::from(format!("{} {}  (sistema)", ic.excluido(), n.nombre)),
+                    ])
                     .fg(APAGADO),
                     tipo => {
                         let bytes = n.total().bytes;
@@ -152,6 +171,7 @@ fn panel_disco(f: &mut Frame, app: &mut App, area: Rect) {
                             (ic.carpeta(), Style::new().bold(), "")
                         };
                         Row::new([
+                            marca_carpeta(app, id),
                             Cell::from(format!("{icono} {}{sufijo}", n.nombre)),
                             derecha(tamano(bytes)),
                             Cell::from(barra(bytes, total, BARRA_DISCO)).fg(ACENTO),
@@ -170,6 +190,7 @@ fn panel_disco(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::new()
                 };
                 Row::new([
+                    marca_archivo(app, i),
                     Cell::from(Line::from(vec![
                         Span::raw(ic.categoria(a.categoria)).fg(color(a.categoria)),
                         Span::raw(format!(" {nombre}")),
@@ -198,6 +219,7 @@ fn panel_disco(f: &mut Frame, app: &mut App, area: Rect) {
     let tabla = Table::new(
         filas,
         [
+            Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(10),
             Constraint::Length(BARRA_DISCO as u16),
@@ -288,6 +310,7 @@ fn panel_clasificado(f: &mut Frame, app: &mut App, area: Rect) {
                     let a = app.archivo(i);
                     let ruta = Cell::from(relativa(&base, &a.ruta));
                     Row::new([
+                        marca_archivo(app, i),
                         Cell::from(ic.categoria(a.categoria)).fg(color(a.categoria)),
                         derecha(tamano(a.tamano)),
                         Cell::from(fecha(a.modificado)).fg(APAGADO),
@@ -300,6 +323,7 @@ fn panel_clasificado(f: &mut Frame, app: &mut App, area: Rect) {
                 })
                 .collect();
             let anchos = vec![
+                Constraint::Length(1),
                 Constraint::Length(2),
                 Constraint::Length(9),
                 Constraint::Length(10),
@@ -389,14 +413,15 @@ fn panel_clasificado(f: &mut Frame, app: &mut App, area: Rect) {
                     g.archivos
                         .iter()
                         .enumerate()
-                        .map(|(i, &a)| {
-                            let a = app.archivo(a);
+                        .map(|(i, &archivo)| {
+                            let a = app.archivo(archivo);
                             let marca = if i == 0 {
                                 Cell::from("conservar").fg(Color::Green)
                             } else {
                                 Cell::from("copia").fg(color_motivo(Motivo::Duplicado))
                             };
                             Row::new([
+                                marca_archivo(app, archivo),
                                 marca,
                                 Cell::from(fecha(a.modificado)).fg(APAGADO),
                                 Cell::from(relativa(&base, &a.ruta)),
@@ -406,6 +431,7 @@ fn panel_clasificado(f: &mut Frame, app: &mut App, area: Rect) {
                 })
                 .unwrap_or_default();
             let anchos = vec![
+                Constraint::Length(1),
                 Constraint::Length(9),
                 Constraint::Length(10),
                 Constraint::Fill(1),
@@ -604,6 +630,26 @@ fn lineas_detalle(app: &App) -> Vec<Line<'static>> {
     }
 }
 
+/// `*` si la carpeta está marcada entera, `~` si en parte.
+fn marca_carpeta(app: &App, id: usize) -> Cell<'static> {
+    let marcados = app.marcados_en(id);
+    if marcados == 0 {
+        Cell::from(" ")
+    } else if marcados >= app.arbol.nodo(id).total().cantidad {
+        Cell::from("*").fg(MARCADO).bold()
+    } else {
+        Cell::from("~").fg(MARCADO)
+    }
+}
+
+fn marca_archivo(app: &App, i: u32) -> Cell<'static> {
+    if app.marcados.contains(&i) {
+        Cell::from("*").fg(MARCADO).bold()
+    } else {
+        Cell::from(" ")
+    }
+}
+
 fn color_motivo(m: Motivo) -> Color {
     match m {
         Motivo::Temporal => Color::LightRed,
@@ -625,59 +671,228 @@ fn pie(f: &mut Frame, app: &App, area: Rect) {
         .fg(Color::White),
         Span::raw(" "),
     ];
+    if let Some(m) = &app.mensaje {
+        spans.push(Span::raw(m.clone()).fg(REVISAR).bold());
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
     let subvista = matches!(
         app.derecha,
         Derecha::Archivos(Some(_), _) | Derecha::Copias(_)
     );
-    let teclas: &[(&str, &str)] = match (app.panel, &app.derecha) {
-        (Panel::Disco, _) => &[
-            ("↑↓", "mover"),
-            ("Enter", "entrar"),
-            ("⌫", "subir"),
-            ("Tab", "panel"),
-            ("1-8", "vista"),
-            ("d", "duplicados"),
-            ("e", "exportar"),
-            ("q", "salir"),
-        ],
-        (Panel::Clasificado, _) if subvista => &[
-            ("↑↓", "mover"),
-            ("Enter", "ir a la carpeta"),
-            ("←", "volver"),
-            ("Tab", "panel"),
-            ("e", "exportar"),
-            ("q", "salir"),
-        ],
-        (Panel::Clasificado, Derecha::Categorias | Derecha::Anios(_)) => &[
-            ("↑↓", "mover"),
-            ("Enter", "ver archivos"),
-            ("←→", "vista"),
-            ("Tab", "panel"),
-            ("e", "exportar"),
-            ("q", "salir"),
-        ],
-        (Panel::Clasificado, Derecha::Duplicados(_)) => &[
-            ("↑↓", "mover"),
-            ("Enter", "ver copias"),
-            ("←→", "vista"),
-            ("d", "buscar"),
-            ("Tab", "panel"),
-            ("q", "salir"),
-        ],
-        (Panel::Clasificado, _) => &[
-            ("↑↓", "mover"),
-            ("Enter", "ir a la carpeta"),
-            ("←→", "vista"),
-            ("Tab", "panel"),
-            ("e", "exportar"),
-            ("q", "salir"),
-        ],
+    let navegar: &[(&str, &str)] = match (app.panel, &app.derecha) {
+        (Panel::Disco, _) => &[("Enter", "entrar"), ("⌫", "subir")],
+        (Panel::Clasificado, _) if subvista => &[("Enter", "ir"), ("←", "volver")],
+        (Panel::Clasificado, Derecha::Categorias | Derecha::Anios(_)) => {
+            &[("Enter", "ver"), ("←→", "vista")]
+        }
+        (Panel::Clasificado, Derecha::Duplicados(_)) => &[("Enter", "copias"), ("←→", "vista")],
+        (Panel::Clasificado, _) => &[("Enter", "ir"), ("←→", "vista")],
     };
+    let mut teclas: Vec<(&str, &str)> = navegar.to_vec();
+    teclas.extend([("Tab", "panel"), ("1-8", "vista"), ("Espacio", "marcar")]);
+    if app.marcados.is_empty() {
+        teclas.extend([("d", "duplicados"), ("e", "informe")]);
+    } else {
+        // Con algo marcado importa más qué hacer con eso (y así entra en 120 columnas).
+        teclas.extend([("c", "ordenar"), ("x", "a borrar"), ("u", "desmarcar")]);
+    }
+    teclas.push(("q", "salir"));
     for (tecla, que) in teclas {
-        spans.push(Span::raw(*tecla).fg(ACENTO).bold());
+        spans.push(Span::raw(tecla).fg(ACENTO).bold());
         spans.push(Span::raw(format!(" {que}  ")).fg(APAGADO));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn modal_accion(f: &mut Frame, app: &App) {
+    let Some(accion) = &app.accion else {
+        return;
+    };
+    let ayuda = |t: &str| Line::raw(t.to_string()).fg(APAGADO);
+    let (titulo, lineas): (&str, Vec<Line>) = match accion {
+        Accion::Destino { texto, modo } => {
+            let (modo, otro) = match modo {
+                Modo::Mover => ("mover", "copiar"),
+                Modo::Copiar => ("copiar", "mover"),
+            };
+            (
+                " Ordenar lo marcado ",
+                vec![
+                    Line::raw(format!(
+                        "{} archivos marcados ({}). Carpeta de destino:",
+                        miles(app.marcados.len() as u64),
+                        tamano(app.marcados_bytes)
+                    )),
+                    Line::raw(""),
+                    Line::from(vec![
+                        Span::raw("> ").fg(ACENTO),
+                        Span::raw(texto.clone()),
+                        Span::raw("█").fg(ACENTO),
+                    ]),
+                    Line::raw(""),
+                    Line::from(vec![
+                        Span::raw("Modo: ").fg(APAGADO),
+                        Span::raw(modo).bold(),
+                        Span::raw(format!("  (Tab: {otro})")).fg(APAGADO),
+                    ]),
+                    ayuda("Fotos, videos y grabaciones por año; el resto con su carpeta original."),
+                    Line::raw(""),
+                    ayuda("Enter: vista previa (todavía no se hace nada)  ·  Esc: cancelar"),
+                ],
+            )
+        }
+        Accion::Preparando(_) => (
+            " Preparando ",
+            vec![
+                Line::raw(""),
+                Line::raw("Armando el plan (leyendo la fecha EXIF de las fotos)…"),
+                Line::raw(""),
+                ayuda("Esc: cancelar"),
+            ],
+        ),
+        Accion::Confirmar(plan) => {
+            let mut v: Vec<Line> = acciones::describir(plan, &app.escaneo.raiz, 5)
+                .into_iter()
+                .map(|(nivel, texto)| match nivel {
+                    Nivel::Titulo => Line::raw(texto).bold(),
+                    Nivel::Normal => Line::raw(texto),
+                    Nivel::Aviso => Line::raw(texto).fg(REVISAR),
+                    Nivel::Problema => Line::raw(texto).fg(Color::Red).bold(),
+                })
+                .collect();
+            v.push(Line::raw(""));
+            if plan.se_puede_ejecutar() {
+                if matches!(
+                    plan.tipo,
+                    TipoAccion::Ordenar(Modo::Mover) | TipoAccion::ParaBorrar
+                ) {
+                    v.push(ayuda(
+                        "Queda un registro para deshacerlo: analizador deshacer <registro>",
+                    ));
+                }
+                v.push(Line::from(vec![
+                    Span::raw("Enter/s").fg(ACENTO).bold(),
+                    Span::raw(": hacerlo  ·  ").fg(APAGADO),
+                    Span::raw("n/Esc").fg(ACENTO).bold(),
+                    Span::raw(": cancelar").fg(APAGADO),
+                ]));
+            } else {
+                v.push(ayuda("Esc: volver"));
+            }
+            (" Vista previa ", v)
+        }
+        Accion::Ejecutando { plan, progreso, .. } => {
+            let hechos = progreso.hechos.load(Ordering::Relaxed);
+            let bytes = progreso.bytes.load(Ordering::Relaxed);
+            let actual = progreso
+                .actual
+                .lock()
+                .map(|p| relativa(&app.escaneo.raiz, &p))
+                .unwrap_or_default();
+            (
+                " Trabajando ",
+                vec![
+                    Line::from(vec![
+                        Span::raw(porcentaje(bytes, plan.bytes.max(1)))
+                            .fg(ACENTO)
+                            .bold(),
+                        Span::raw(format!(
+                            "  ·  {} de {} archivos  ·  {} de {}",
+                            miles(hechos),
+                            miles(plan.operaciones.len() as u64),
+                            tamano(bytes),
+                            tamano(plan.bytes)
+                        )),
+                    ]),
+                    Line::raw(barra(bytes, plan.bytes.max(1), 50)).fg(ACENTO),
+                    Line::raw(""),
+                    ayuda(&actual),
+                    Line::raw(""),
+                    ayuda("Esc: cancelar (termina el archivo actual y no deja nada a medias)"),
+                ],
+            )
+        }
+        Accion::Listo { plan, resultado } => {
+            let mut v = vec![
+                Line::raw(format!(
+                    "Listo: {} archivos ({}) en {}.",
+                    miles(resultado.hechos as u64),
+                    tamano(resultado.bytes),
+                    duracion(resultado.duracion)
+                ))
+                .fg(Color::Green)
+                .bold(),
+            ];
+            if resultado.cancelado {
+                v.push(Line::raw("Se canceló: lo que faltaba quedó donde estaba.").fg(REVISAR));
+            }
+            if !resultado.fallidos.is_empty() {
+                v.push(
+                    Line::raw(format!(
+                        "No se pudieron hacer {} (quedaron donde estaban):",
+                        miles(resultado.fallidos.len() as u64)
+                    ))
+                    .fg(Color::Red),
+                );
+                for (op, err) in resultado.fallidos.iter().take(3) {
+                    v.push(Line::raw(format!(
+                        "  {}: {err}",
+                        relativa(&app.escaneo.raiz, &op.origen)
+                    )));
+                }
+            }
+            if plan.tipo != TipoAccion::Deshacer {
+                v.push(Line::raw(""));
+                v.push(ayuda(&format!("Registro: {}", plan.registro.display())));
+            }
+            if matches!(
+                plan.tipo,
+                TipoAccion::Ordenar(Modo::Mover) | TipoAccion::ParaBorrar
+            ) {
+                v.push(ayuda(&format!(
+                    "Para deshacer: analizador deshacer \"{}\"",
+                    plan.registro.display()
+                )));
+            }
+            v.push(Line::raw(""));
+            v.push(ayuda(if resultado.hechos > 0 {
+                "Cualquier tecla: volver a escanear para ver cómo quedó"
+            } else {
+                "Cualquier tecla: cerrar"
+            }));
+            (" Listo ", v)
+        }
+        Accion::Error(msg) => (
+            " Error ",
+            vec![
+                Line::raw(msg.clone()).fg(Color::Red),
+                Line::raw(""),
+                ayuda("Cualquier tecla: cerrar"),
+            ],
+        ),
+    };
+    // La última línea son las teclas: va en una franja fija abajo, para que nunca se corte.
+    let mut lineas = lineas;
+    let teclas = lineas.pop().unwrap_or_default();
+    let ancho = 100.min(f.area().width);
+    let interior = (ancho.saturating_sub(2) as usize).max(1);
+    // Cuántos renglones ocupa cada línea al ajustarse al ancho (+1 de margen por el corte
+    // entre palabras, que puede usar un renglón más que la cuenta exacta).
+    let renglones: usize = lineas
+        .iter()
+        .map(|l| l.width().max(1).div_ceil(interior) + usize::from(l.width() > interior))
+        .sum();
+    let alto = (renglones as u16 + 3).min(f.area().height);
+    let area = centrado(f.area(), ancho, alto);
+    f.render_widget(Clear, area);
+    let b = bloque(titulo, true);
+    let dentro = b.inner(area);
+    f.render_widget(b, area);
+    let [cuerpo, abajo] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(dentro);
+    f.render_widget(Paragraph::new(lineas).wrap(Wrap { trim: false }), cuerpo);
+    f.render_widget(Paragraph::new(teclas), abajo);
 }
 
 fn modal_exportar(f: &mut Frame, app: &App) {

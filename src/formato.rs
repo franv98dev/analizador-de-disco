@@ -29,6 +29,15 @@ pub fn miles(n: u64) -> String {
     s
 }
 
+/// `1 temporal`, `3 temporales`.
+pub fn cantidad(n: u64, singular: &str, plural: &str) -> String {
+    if n == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{} {plural}", miles(n))
+    }
+}
+
 pub fn duracion(d: Duration) -> String {
     let s = d.as_secs_f64();
     if s < 60.0 {
@@ -93,6 +102,13 @@ mod tests {
         assert_eq!(miles(999), "999");
         assert_eq!(miles(1000), "1.000");
         assert_eq!(miles(1234567), "1.234.567");
+    }
+
+    #[test]
+    fn singular_y_plural() {
+        assert_eq!(cantidad(1, "temporal", "temporales"), "1 temporal");
+        assert_eq!(cantidad(0, "temporal", "temporales"), "0 temporales");
+        assert_eq!(cantidad(1500, "copia", "copias"), "1.500 copias");
     }
 
     #[test]

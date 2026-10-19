@@ -3,6 +3,7 @@
 //! `exportar` (el informe, con vista previa y sin pisar archivos sin confirmación).
 //! `duplicados` es lo único que lee el contenido de los archivos, y solo para leer.
 
+pub mod acciones;
 pub mod antiguedad;
 pub mod app;
 pub mod arbol;
@@ -14,6 +15,7 @@ pub mod escaner;
 pub mod exclusiones;
 pub mod exportar;
 pub mod formato;
+pub mod fotos;
 pub mod iconos;
 pub mod informe;
 pub mod resumen;

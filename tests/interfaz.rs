@@ -430,9 +430,9 @@ fn markdown_con_todas_las_secciones() {
     let md = String::from_utf8(out).unwrap();
     for esperado in [
         "# Informe de disco:",
-        "Escaneo de 42 archivos en",
+        "Escaneo de 43 archivos en",
         "## Por categoría",
-        "| Fotos | 6 | 1,6 MB |",
+        "| Fotos | 7 | 1,6 MB |",
         "| Instaladores | 4 |",
         "## Más pesados por categoría",
         "### Videos",
@@ -528,7 +528,7 @@ fn la_pantalla_muestra_los_dos_paneles() {
         "1 Categorías",
         "■ Instaladores",
         "Enter entrar",
-        "e exportar",
+        "e informe",
     ] {
         assert!(p.contains(esperado), "falta {esperado:?} en:\n{p}");
     }

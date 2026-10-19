@@ -20,6 +20,10 @@ analizador escanear D:\ --hilos 2       # menos hilos: a veces rinde más en un 
 analizador informe C:\ --salida D:\     # informe Markdown + CSV (muestra antes qué va a escribir)
 analizador informe C:\ --duplicados     # el informe con duplicados (lee el contenido: tarda más)
 analizador duplicados D:\ --top 50      # solo duplicados: grupos de copias y cuánto se libera
+analizador ordenar C:\Users\papá --destino E:\Backup                 # mueve lo del usuario, ordenado
+analizador ordenar C:\ --destino E:\Backup --categorias fotos,videos --copiar
+analizador para-borrar C:\Users\papá --duplicados                    # lo borrable a _para_borrar
+analizador deshacer C:\Users\papá                                    # todo de vuelta a su lugar
 analizador demo                         # crea una carpeta de prueba y la escanea
 analizador demo --ver                   # lo mismo, en la interfaz
 ```
@@ -60,6 +64,10 @@ clasificado. Los dos paneles van juntos: al moverte por la izquierda, la derecha
 | `Tab` | cambiar de panel | cambiar de panel |
 | `1`–`8` | Categorías, Pesados, Antigüedad, Borrable, Duplicados, Proyectos, Revisar, Excluido | ídem |
 | `d` | buscar duplicados en segundo plano (otra vez `d`: cancelar) | ídem |
+| `Espacio` | marcar o desmarcar la carpeta o el archivo | marcar la fila: una categoría, un año, una sugerencia de borrable, las copias de un grupo… |
+| `c` | ordenar lo marcado (destino → vista previa → confirmar); `Tab` cambia entre mover y copiar | ídem |
+| `x` | mandar lo marcado a `_para_borrar` (vista previa → confirmar) | ídem |
+| `u` | desmarcar todo | ídem |
 | `e` | exportar el informe (elegir carpeta → vista previa → confirmar) | ídem |
 | `q` | salir | salir |
 
@@ -106,6 +114,50 @@ a lo escaneado**: si se escanea algo que vive dentro de `Temp`, no se marca todo
 **Los más pesados** de cualquier tipo, y la **antigüedad** por año de última modificación (con Enter en un
 año se ven sus archivos), siempre de la carpeta seleccionada.
 
+## Acciones: ordenar, `_para_borrar` y deshacer
+
+**Ordenar** (`c` en la interfaz o `analizador ordenar`) **mueve** por defecto (`--copiar` o `Tab` para copiar)
+lo que se conserva a un destino ordenado:
+
+```
+Fotos/2015/IMG_20150704_120000.jpg     ← el año sale del EXIF de la cámara; si no tiene, de la modificación
+Videos/2015/cumple de la abuela.mp4
+Grabaciones de voz/2020/Grabación 001.m4a
+Documentos/Facultad/TP1.docx           ← Users/papá/Documents/Facultad/TP1.docx: mantiene su carpeta
+Música/Soda Stereo/De música ligera.mp3
+Proyectos/mi-web/src/index.js          ← los proyectos van enteros, con su estructura
+```
+
+No se llevan los instaladores (salvo que se pidan), los temporales, ni las copias duplicadas: de cada
+grupo va una sola, la que se conserva. Por consola, `ordenar` busca duplicados antes (`--sin-duplicados`
+para saltearlo).
+
+**`_para_borrar`** (`x` o `analizador para-borrar`) mueve las cosas a `_para_borrar/<ruta original>` en la
+raíz de lo escaneado. En el mismo disco es un renombre instantáneo. El programa no borra nada: esa carpeta
+la borrás vos cuando estés seguro. No se vuelve a escanear ni a ofrecer.
+
+**Deshacer** (`analizador deshacer`) lee el registro y devuelve todo a su lugar: el `manifiesto.csv` de
+`_para_borrar`, o el `ordenar-….csv` que queda en `<destino>/_analizador/`.
+
+Cómo se cuida lo que se mueve:
+
+- **Siempre vista previa primero**: cuántos archivos y cuánto pesan, a qué carpetas van, ejemplos, qué se
+  deja afuera y por qué, y si hay **espacio libre** en el destino. No se toca nada hasta confirmar.
+- **Nunca se pisa un archivo**: si el nombre ya existe (o aparece entre la vista previa y la ejecución),
+  se agrega ` (2)`. Sin distinguir mayúsculas, como en Windows.
+- **Mover en el mismo disco es renombrar**: no se copia nada.
+- **Entre discos, copiar + verificar + recién ahí borrar**: se escribe a un `.parcial`, se compara con
+  BLAKE3 contra el original, se le pone el nombre final y después se borra el original. Si algo falla
+  o se cancela, el original queda y no quedan `.parcial`.
+- Se conserva la **fecha de modificación**. Si un archivo cambió desde el escaneo, no se mueve.
+- No acepta destinos de sistema (`C:\Windows`, `/usr`…). Cada operación queda en el registro a medida
+  que se hace, así sirve para deshacer aunque se corte la luz.
+- Después de mover, la interfaz vuelve a escanear sola para mostrar cómo quedó.
+
+La vista previa de ordenar una carpeta de usuario real (178.062 archivos, 62,9 GB, con duplicados:
+1 min 18 s) mostró que iba a mover `.bash_history` y `.claude.json`: los archivos de configuración
+sueltos en la carpeta personal ahora son "revisar" y no se ordenan.
+
 ## Qué hace
 
 **Categorías:** Fotos, Videos, Música, Grabaciones de voz, Documentos, Proyectos/código,
@@ -129,8 +181,8 @@ Comprimidos, Instaladores, Otros.
 Una carpeta `Windows` dentro de Documentos **no** se excluye. Los enlaces simbólicos y las junctions
 de Windows (`Mis documentos`, `Application Data`) no se siguen, para no contar dos veces.
 
-**Revisar:** `AppData` y las carpetas con punto de la carpeta personal (`.config`, `.local`, `.vscode`…)
-no son sistema: ahí hay partidas guardadas, perfiles de navegador, WhatsApp de escritorio.
+**Revisar:** `AppData`, las carpetas con punto de la carpeta personal (`.config`, `.local`, `.vscode`…)
+y los archivos con punto sueltos ahí (`.bash_history`, `.gitconfig`) no son sistema: ahí hay partidas guardadas, perfiles de navegador, WhatsApp de escritorio.
 Se listan aparte, agrupadas por programa (`AppData\Roaming\WhatsApp`), para revisarlas a mano.
 
 ## Compilar y testear
@@ -139,7 +191,7 @@ Hace falta [Rust](https://rustup.rs) (en Windows, también las herramientas de C
 
 ```sh
 cargo test               # clasificación, exclusiones, escaneo, árbol, navegación, informe, pantalla,
-                         # duplicados, borrable y antigüedad
+                         # duplicados, borrable, antigüedad, ordenar, _para_borrar y deshacer
 cargo build --release    # ejecutable en target/release/analizador(.exe)
 cargo run --release --example captura -- <ruta> [ancho] [alto]   # la interfaz como texto
 ```
@@ -160,6 +212,14 @@ que se pueda cancelar, y que un archivo que cambió después del escaneo no se d
 Las reglas de "borrable" tienen un test por cada caso que sí y por cada caso que no, varios sacados
 de falsos positivos reales encontrados al probarlo en una carpeta de usuario.
 
+Las acciones mueven archivos de verdad, así que sus tests apuntan sobre todo a lo que **no** tiene que
+pasar: el dry-run no escribe nada; nunca se pisa un archivo, ni uno que aparezca después de la vista
+previa; un archivo que cambió no se mueve; cancelar no deja `.parcial`; los destinos de sistema se
+rechazan; y la ida y vuelta (`_para_borrar` → deshacer, ordenar → deshacer) deja todo **exactamente**
+igual: mismas rutas, mismo contenido (BLAKE3) y mismas fechas. Mover entre discos se prueba de verdad
+cuando la carpeta temporal y el proyecto están en discos distintos (acá, `C:` y `D:`). La demo trae
+una foto cuyo EXIF dice 2015 aunque se modificó en 2023: tiene que ir a `Fotos/2015`.
+
 ## Por qué Rust
 
 - Genera un ejecutable único, sin runtime, que se copia en un pendrive y anda.
@@ -177,7 +237,7 @@ Go con Bubble Tea habría sido más simple de escribir, pero Rust rinde más en 
 | 1. Escaneo y clasificación en la terminal | ✅ | Categorías, exclusiones, "revisar", proyectos, tiempo y archivos/s, carpeta de demo, tests |
 | 2. Interfaz de dos paneles (ratatui) + informe Markdown/CSV | ✅ | Árbol navegable con tamaños, clasificación de la carpeta seleccionada, saltos de un panel al otro, exportación con vista previa |
 | 3. Duplicados y "probablemente borrable" | ✅ | Duplicados en tres pasadas, borrable con motivo, más pesados, antigüedad, todo en la interfaz y en el informe |
-| 4. Acciones: copiar/mover/`_para_borrar`, con confirmación y dry-run | ⏳ | |
+| 4. Acciones: copiar/mover/`_para_borrar`, con confirmación y dry-run | ✅ | Ordenar por categoría y año (EXIF), `_para_borrar`, deshacer, copia verificada, marcar en la interfaz |
 | 5. Lectura del MFT en Windows | ⏳ | |
 | 6. Build optimizado y ejecutables para Windows y Linux | ⏳ | |
 

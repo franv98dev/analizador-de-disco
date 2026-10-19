@@ -2,7 +2,8 @@
 //! cómo se ve sin abrir la terminal interactiva.
 //!
 //! `cargo run --release --example captura -- <ruta> [ancho] [alto] [teclas]`
-//! Las teclas son letras sueltas: `j`/`k` bajar/subir, `l` Enter, `h` atrás, `t` Tab, `1`-`4` vistas.
+//! Las teclas son letras sueltas: `j`/`k` bajar/subir, `l` Enter, `h` atrás, `t` Tab, `1`-`8` vistas;
+//! lo que va entre comillas se escribe tal cual.
 
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
@@ -27,7 +28,17 @@ fn main() {
     let mut app = App::new(&e, Iconos::Simples);
     eprintln!("árbol armado en {:?}", inicio.elapsed());
 
+    let mut literal = false;
     for c in teclas.chars() {
+        // Entre comillas se escribe tal cual (para tipear una carpeta de destino).
+        if c == '"' {
+            literal = !literal;
+            continue;
+        }
+        if literal {
+            app.tecla(KeyEvent::from(KeyCode::Char(c)));
+            continue;
+        }
         let code = match c {
             'j' => KeyCode::Down,
             'k' => KeyCode::Up,
@@ -39,6 +50,10 @@ fn main() {
         let t = Instant::now();
         app.tecla(KeyEvent::from(code));
         eprintln!("tecla {c:?}: {:?}", t.elapsed());
+        while app.ocupado() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.tick();
+        }
     }
 
     let mut t = Terminal::new(TestBackend::new(ancho, alto)).unwrap();

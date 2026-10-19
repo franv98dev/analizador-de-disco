@@ -94,6 +94,8 @@ pub struct Arbol {
     pub raiz: PathBuf,
     pub nodos: Vec<Nodo>,
     orden: Vec<u32>,
+    /// Carpeta (nodo) de cada archivo, en el orden de `Escaneo::archivos`.
+    carpeta_de: Vec<u32>,
 }
 
 impl Arbol {
@@ -108,6 +110,7 @@ impl Arbol {
                 Tipo::Carpeta,
             )],
             orden: Vec::with_capacity(e.archivos.len()),
+            carpeta_de: Vec::with_capacity(e.archivos.len()),
         };
         let mut indice: HashMap<PathBuf, usize> = HashMap::new();
         indice.insert(e.raiz.clone(), Self::RAIZ);
@@ -122,6 +125,7 @@ impl Arbol {
             };
             ultima = Some((dir, id));
             a.nodos[id].archivos.push(i as u32);
+            a.carpeta_de.push(id as u32);
             sumar(&mut a.nodos[id], archivo);
         }
 
@@ -214,6 +218,16 @@ impl Arbol {
     /// Índices (en `Escaneo::archivos`) de todos los archivos debajo de `id`.
     pub fn archivos_bajo(&self, id: usize) -> &[u32] {
         &self.orden[self.nodos[id].rango.clone()]
+    }
+
+    /// Carpeta en la que está un archivo (índice en `Escaneo::archivos`).
+    pub fn carpeta_de(&self, archivo: u32) -> usize {
+        self.carpeta_de[archivo as usize] as usize
+    }
+
+    /// El nodo y todos sus ancestros hasta la raíz.
+    pub fn ancestros(&self, id: usize) -> impl Iterator<Item = usize> + '_ {
+        std::iter::successors(Some(id), |&n| self.nodos[n].padre)
     }
 
     /// Ruta completa del nodo.

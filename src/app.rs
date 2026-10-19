@@ -1,6 +1,7 @@
 //! Estado de la interfaz y qué hace cada tecla. No dibuja nada ni toca la terminal,
 //! así se puede testear la navegación entera sin pantalla.
 
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,6 +12,9 @@ use std::thread;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 
+use crate::acciones::{
+    self, Elemento, Modo, OpcionesOrdenar, Plan as PlanAccion, ProgresoAccion, Resultado,
+};
 use crate::antiguedad;
 use crate::arbol::{Arbol, Suma, Tipo};
 use crate::borrable::{self, Item};
@@ -119,6 +123,29 @@ pub enum Exportar {
     Error(String),
 }
 
+/// Ordenar o mandar a `_para_borrar` lo marcado, paso por paso.
+pub enum Accion {
+    /// Elegir el destino de ordenar y si se mueve o se copia.
+    Destino {
+        texto: String,
+        modo: Modo,
+    },
+    /// Armando el plan en otro hilo (lee la fecha EXIF de las fotos).
+    Preparando(Receiver<PlanAccion>),
+    /// Vista previa: todavía no se hizo nada.
+    Confirmar(PlanAccion),
+    Ejecutando {
+        plan: PlanAccion,
+        progreso: Arc<ProgresoAccion>,
+        rx: Receiver<io::Result<Resultado>>,
+    },
+    Listo {
+        plan: PlanAccion,
+        resultado: Resultado,
+    },
+    Error(String),
+}
+
 /// Búsqueda de duplicados corriendo en otro hilo.
 pub struct Busqueda {
     pub progreso: Arc<Progreso>,
@@ -152,7 +179,17 @@ pub struct App<'a> {
     /// Fechas de la categoría seleccionada debajo del foco.
     pub detalle: Option<Totales>,
     pub exportar: Option<Exportar>,
+    pub accion: Option<Accion>,
+    /// Archivos marcados con Espacio (índices en `Escaneo::archivos`).
+    pub marcados: HashSet<u32>,
+    pub marcados_bytes: u64,
+    /// Cuántos archivos marcados hay debajo de cada carpeta.
+    marcados_por_nodo: Vec<u64>,
+    /// Mensaje corto para el pie; se borra con la próxima tecla.
+    pub mensaje: Option<String>,
     pub salir: bool,
+    /// Al salir, volver a escanear (después de mover cosas, lo de pantalla quedó viejo).
+    pub reescanear: bool,
 }
 
 impl<'a> App<'a> {
@@ -176,8 +213,15 @@ impl<'a> App<'a> {
             tabla_der: TableState::default(),
             detalle: None,
             exportar: None,
+            accion: None,
+            marcados: HashSet::new(),
+            marcados_bytes: 0,
+            marcados_por_nodo: Vec::new(),
+            mensaje: None,
             salir: false,
+            reescanear: false,
         };
+        app.marcados_por_nodo = vec![0; app.arbol.nodos.len()];
         app.abrir(Arbol::RAIZ, None);
         app
     }
@@ -211,8 +255,18 @@ impl<'a> App<'a> {
     }
 
     pub fn tecla(&mut self, k: KeyEvent) {
+        self.mensaje = None;
         if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
-            self.salir = true;
+            // Mientras se mueven archivos, Ctrl+C cancela en vez de cortar a la mitad.
+            if let Some(Accion::Ejecutando { progreso, .. }) = &self.accion {
+                progreso.cancelar.store(true, Ordering::Relaxed);
+            } else {
+                self.salir = true;
+            }
+            return;
+        }
+        if self.accion.is_some() {
+            self.tecla_accion(k.code);
             return;
         }
         if self.exportar.is_some() {
@@ -234,6 +288,29 @@ impl<'a> App<'a> {
                 self.exportar = Some(Exportar::Destino(destino));
             }
             KeyCode::Char('d') => self.alternar_busqueda(),
+            KeyCode::Char(' ') => {
+                let archivos = self.archivos_de_la_seleccion();
+                self.alternar_marca(&archivos);
+            }
+            KeyCode::Char('u') => self.desmarcar_todo(),
+            KeyCode::Char('c') => {
+                if self.marcados.is_empty() {
+                    self.mensaje = Some("Marcá con Espacio lo que querés ordenar.".to_string());
+                } else {
+                    self.accion = Some(Accion::Destino {
+                        texto: String::new(),
+                        modo: Modo::Mover,
+                    });
+                }
+            }
+            KeyCode::Char('x') => {
+                if self.marcados.is_empty() {
+                    self.mensaje =
+                        Some("Marcá con Espacio lo que querés mandar a _para_borrar.".to_string());
+                } else {
+                    self.preparar(None);
+                }
+            }
             KeyCode::Char(c @ '1'..='8') => {
                 self.cambiar_pestana(Pestana::TODAS[c as usize - '1' as usize]);
             }
@@ -570,6 +647,206 @@ impl<'a> App<'a> {
         v
     }
 
+    /// Hay algo corriendo en otro hilo: la pantalla se redibuja sola para mostrar el avance.
+    pub fn ocupado(&self) -> bool {
+        self.busqueda.is_some()
+            || matches!(
+                self.accion,
+                Some(Accion::Preparando(_) | Accion::Ejecutando { .. })
+            )
+    }
+
+    /// Cuántos archivos marcados hay debajo de una carpeta.
+    pub fn marcados_en(&self, id: usize) -> u64 {
+        self.marcados_por_nodo.get(id).copied().unwrap_or(0)
+    }
+
+    /// Si ya estaban todos marcados los desmarca; si no, marca los que falten.
+    pub fn alternar_marca(&mut self, archivos: &[u32]) {
+        if archivos.is_empty() {
+            return;
+        }
+        let desmarcar = archivos.iter().all(|a| self.marcados.contains(a));
+        for &a in archivos {
+            let cambio = if desmarcar {
+                self.marcados.remove(&a)
+            } else {
+                self.marcados.insert(a)
+            };
+            if !cambio {
+                continue;
+            }
+            let tamano = self.escaneo.archivos[a as usize].tamano;
+            for n in self.arbol.ancestros(self.arbol.carpeta_de(a)) {
+                if desmarcar {
+                    self.marcados_por_nodo[n] -= 1;
+                } else {
+                    self.marcados_por_nodo[n] += 1;
+                }
+            }
+            if desmarcar {
+                self.marcados_bytes -= tamano;
+            } else {
+                self.marcados_bytes += tamano;
+            }
+        }
+    }
+
+    pub fn desmarcar_todo(&mut self) {
+        self.marcados.clear();
+        self.marcados_bytes = 0;
+        self.marcados_por_nodo.fill(0);
+    }
+
+    /// Los archivos de la fila seleccionada: una carpeta entera, una categoría, un año,
+    /// una sugerencia de borrable, las copias de un grupo de duplicados…
+    pub fn archivos_de_la_seleccion(&self) -> Vec<u32> {
+        let debajo = |id: usize, pasa: &dyn Fn(&Archivo) -> bool| -> Vec<u32> {
+            self.arbol
+                .archivos_bajo(id)
+                .iter()
+                .copied()
+                .filter(|&a| pasa(self.archivo(a)))
+                .collect()
+        };
+        let carpeta = |ruta: &Path| -> Vec<u32> {
+            self.arbol
+                .buscar(ruta)
+                .map(|id| self.arbol.archivos_bajo(id).to_vec())
+                .unwrap_or_default()
+        };
+        if self.panel == Panel::Disco {
+            return match self.seleccion_izq() {
+                Some(Entrada::Carpeta(id)) => self.arbol.archivos_bajo(id).to_vec(),
+                Some(Entrada::Archivo(a)) => vec![a],
+                _ => Vec::new(),
+            };
+        }
+        let Some(i) = self.tabla_der.selected() else {
+            return Vec::new();
+        };
+        match &self.derecha {
+            Derecha::Categorias => {
+                let c = Categoria::TODAS[i];
+                debajo(self.foco, &|a| a.categoria == c && a.revisar.is_none())
+            }
+            Derecha::Archivos(_, v) => v.get(i).map(|&a| vec![a]).unwrap_or_default(),
+            Derecha::Anios(v) => match v.get(i) {
+                Some(&(anio, _)) => debajo(self.foco, &|a| {
+                    antiguedad::anio(a.modificado) == anio && a.revisar.is_none()
+                }),
+                None => Vec::new(),
+            },
+            Derecha::Borrable(v) => match v.get(i) {
+                Some(item) => match item.archivo {
+                    Some(a) => vec![a],
+                    None => carpeta(&item.ruta),
+                },
+                None => Vec::new(),
+            },
+            Derecha::Duplicados(v) => v
+                .get(i)
+                .and_then(|&g| self.grupo(g))
+                .map(|g| g.archivos[1..].to_vec())
+                .unwrap_or_default(),
+            Derecha::Copias(g) => self
+                .grupo(*g)
+                .and_then(|g| g.archivos.get(i))
+                .map(|&a| vec![a])
+                .unwrap_or_default(),
+            Derecha::Grupos(v) => v.get(i).map(|g| carpeta(&g.ruta)).unwrap_or_default(),
+            Derecha::Excluidos(_) => Vec::new(),
+        }
+    }
+
+    /// Arma el plan en otro hilo: ordenar en `destino`, o (sin destino) mandar a `_para_borrar`.
+    fn preparar(&mut self, destino: Option<(PathBuf, Modo)>) {
+        let mut indices: Vec<u32> = self.marcados.iter().copied().collect();
+        indices.sort_unstable();
+        let elementos: Vec<Elemento> = indices
+            .iter()
+            .map(|&i| Elemento::de(self.escaneo, i))
+            .collect();
+        let raiz = self.escaneo.raiz.clone();
+        let dups = self.duplicados.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let plan = match destino {
+                Some((destino, modo)) => acciones::planificar_ordenar(
+                    &elementos,
+                    &raiz,
+                    &destino,
+                    // Lo marcó a mano: si marcó instaladores, es porque los quiere.
+                    OpcionesOrdenar {
+                        modo: Some(modo),
+                        incluir_instaladores: true,
+                    },
+                    dups.as_ref(),
+                    chrono::Local::now(),
+                ),
+                None => acciones::planificar_para_borrar(&elementos, &raiz),
+            };
+            let _ = tx.send(plan);
+        });
+        self.accion = Some(Accion::Preparando(rx));
+    }
+
+    fn tecla_accion(&mut self, code: KeyCode) {
+        let Some(accion) = self.accion.take() else {
+            return;
+        };
+        self.accion = match (accion, code) {
+            (Accion::Destino { .. }, KeyCode::Esc) => None,
+            (Accion::Destino { mut texto, modo }, KeyCode::Char(c)) => {
+                texto.push(c);
+                Some(Accion::Destino { texto, modo })
+            }
+            (Accion::Destino { mut texto, modo }, KeyCode::Backspace) => {
+                texto.pop();
+                Some(Accion::Destino { texto, modo })
+            }
+            (Accion::Destino { texto, modo }, KeyCode::Tab) => {
+                let modo = match modo {
+                    Modo::Mover => Modo::Copiar,
+                    Modo::Copiar => Modo::Mover,
+                };
+                Some(Accion::Destino { texto, modo })
+            }
+            (Accion::Destino { texto, modo }, KeyCode::Enter) if !texto.trim().is_empty() => {
+                self.preparar(Some((PathBuf::from(texto.trim()), modo)));
+                return;
+            }
+            // Si se cancela mientras se arma, el plan se descarta cuando llegue.
+            (Accion::Preparando(_), KeyCode::Esc) => None,
+            (Accion::Confirmar(plan), KeyCode::Enter | KeyCode::Char('s'))
+                if plan.se_puede_ejecutar() =>
+            {
+                let progreso = Arc::new(ProgresoAccion::default());
+                let (tx, rx) = mpsc::channel();
+                let (p, copia) = (Arc::clone(&progreso), plan.clone());
+                thread::spawn(move || {
+                    let _ = tx.send(acciones::ejecutar(&copia, &p));
+                });
+                Some(Accion::Ejecutando { plan, progreso, rx })
+            }
+            (Accion::Confirmar(_), KeyCode::Esc | KeyCode::Char('n')) => None,
+            (Accion::Ejecutando { plan, progreso, rx }, KeyCode::Esc) => {
+                progreso.cancelar.store(true, Ordering::Relaxed);
+                Some(Accion::Ejecutando { plan, progreso, rx })
+            }
+            (Accion::Listo { resultado, .. }, _) => {
+                // Lo que se ve quedó viejo: se vuelve a escanear.
+                if resultado.hechos > 0 {
+                    self.reescanear = true;
+                    self.salir = true;
+                }
+                None
+            }
+            (Accion::Error(_), _) => None,
+            (otra, _) => Some(otra),
+        };
+    }
+
     /// `d`: busca duplicados en otro hilo, o cancela la búsqueda en curso.
     fn alternar_busqueda(&mut self) {
         if let Some(b) = &self.busqueda {
@@ -592,8 +869,39 @@ impl<'a> App<'a> {
         self.cambiar_pestana(Pestana::Duplicados);
     }
 
-    /// Revisa si terminó la búsqueda de duplicados. Se llama en cada vuelta del bucle.
+    /// Revisa si terminó algo que corre en otro hilo. Se llama en cada vuelta del bucle.
     pub fn tick(&mut self) {
+        self.tick_accion();
+        self.tick_duplicados();
+    }
+
+    fn tick_accion(&mut self) {
+        match &self.accion {
+            Some(Accion::Preparando(rx)) => match rx.try_recv() {
+                Ok(plan) => self.accion = Some(Accion::Confirmar(plan)),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.accion = Some(Accion::Error("no se pudo armar el plan".to_string()))
+                }
+            },
+            Some(Accion::Ejecutando { rx, .. }) => {
+                let r = match rx.try_recv() {
+                    Ok(r) => r,
+                    Err(TryRecvError::Empty) => return,
+                    Err(TryRecvError::Disconnected) => Err(io::Error::other("se cortó a la mitad")),
+                };
+                if let Some(Accion::Ejecutando { plan, .. }) = self.accion.take() {
+                    self.accion = Some(match r {
+                        Ok(resultado) => Accion::Listo { plan, resultado },
+                        Err(err) => Accion::Error(err.to_string()),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn tick_duplicados(&mut self) {
         let Some(b) = &self.busqueda else {
             return;
         };

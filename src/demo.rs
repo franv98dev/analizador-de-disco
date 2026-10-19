@@ -102,6 +102,14 @@ pub const FALSOS_DUPLICADOS: &[(&str, &str, Option<i32>)] = &[(
     Some(2019),
 )];
 
+/// Fotos con fecha EXIF: (ruta, fecha de la cámara, año de modificación). La modificación
+/// es la del día en que se copió del celular; al ordenar tiene que ganar la del EXIF.
+pub const FOTOS_CON_EXIF: &[(&str, &str, Option<i32>)] = &[(
+    "DCIM/Camera/IMG_20150704_120000.jpg",
+    "2015:07:04 12:00:00",
+    Some(2023),
+)];
+
 /// Crea la demo en `destino`. Si ya existe y es una demo anterior la recrea;
 /// si existe y no es una demo, no toca nada.
 pub fn crear(destino: &Path) -> io::Result<()> {
@@ -126,6 +134,14 @@ pub fn crear(destino: &Path) -> io::Result<()> {
     }
     for (relativa, original, anio) in COPIAS {
         escribir(destino, relativa, &contenido_de(original), *anio)?;
+    }
+    for (relativa, fecha, anio) in FOTOS_CON_EXIF {
+        escribir(
+            destino,
+            relativa,
+            &crate::fotos::jpeg_con_exif(fecha),
+            *anio,
+        )?;
     }
     for (relativa, original, anio) in FALSOS_DUPLICADOS {
         let mut datos = contenido_de(original);

@@ -36,7 +36,7 @@ fn cuenta_cada_categoria() {
     let (_dir, e) = escanear_demo(None);
     let r = Resumen::de(&e);
     let esperado = [
-        (Categoria::Fotos, 6),  // 4 + una copia + un falso duplicado
+        (Categoria::Fotos, 7),  // 4 + una copia + un falso duplicado + una con EXIF
         (Categoria::Videos, 3), // 2 + una copia
         (Categoria::Musica, 2),
         (Categoria::Grabaciones, 2),
@@ -52,6 +52,7 @@ fn cuenta_cada_categoria() {
     assert_eq!(
         r.categoria(Categoria::Fotos).bytes,
         (300 + 250 + 120 + 400 + 300 + 300) * 1024
+            + analizador_de_disco::fotos::jpeg_con_exif("2015:07:04 12:00:00").len() as u64
     );
 }
 
@@ -214,5 +215,34 @@ fn escanear_algo_que_no_existe_da_error() {
             &AtomicU64::new(0)
         )
         .is_err()
+    );
+}
+
+#[test]
+fn los_archivos_con_punto_de_la_carpeta_personal_son_para_revisar() {
+    // Hallado al planificar el ordenar de una carpeta de usuario real: iba a mover
+    // .bash_history y .claude.json, que son configuración de programas.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("Users").join("papa");
+    fs::create_dir_all(home.join("Documentos")).unwrap();
+    fs::write(home.join(".bash_history"), "ls").unwrap();
+    fs::write(home.join(".gitconfig"), "[user]").unwrap();
+    fs::write(home.join("lista.txt"), "comprar").unwrap();
+    fs::write(home.join("Documentos/.notas-ocultas.txt"), "x").unwrap();
+    let e = escanear(dir.path(), &Opciones::default(), &AtomicU64::new(0)).unwrap();
+    let revisar = |nombre: &str| {
+        e.archivos
+            .iter()
+            .find(|a| a.ruta.ends_with(nombre))
+            .unwrap()
+            .revisar
+            .is_some()
+    };
+    assert!(revisar(".bash_history"));
+    assert!(revisar(".gitconfig"));
+    assert!(!revisar("lista.txt"));
+    assert!(
+        !revisar(".notas-ocultas.txt"),
+        "fuera de la carpeta personal es del usuario"
     );
 }

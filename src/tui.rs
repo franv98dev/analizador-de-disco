@@ -12,7 +12,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::app::App;
-use crate::escaner::{Opciones, escanear};
+use crate::escaner::{Escaneo, Opciones, escanear};
 use crate::iconos::Iconos;
 use crate::ui;
 
@@ -46,11 +46,44 @@ fn correr(
     opciones: Opciones,
     iconos: Iconos,
 ) -> io::Result<()> {
+    // Después de mover cosas lo que se ve quedó viejo: se vuelve a escanear y se sigue.
+    while let Some(escaneo) = escanear_mostrando(terminal, ruta, &opciones)? {
+        // Con millones de archivos, armar el árbol tarda alrededor de un segundo.
+        terminal.draw(|f| ui::dibujar_clasificando(f, escaneo.archivos.len() as u64))?;
+        let mut app = App::new(&escaneo, iconos);
+        while !app.salir {
+            app.tick();
+            terminal.draw(|f| ui::dibujar(f, &mut app))?;
+            // Mientras algo corre en otro hilo se redibuja solo, para mostrar el avance.
+            if app.ocupado() && !event::poll(Duration::from_millis(150))? {
+                continue;
+            }
+            // En Windows llegan también los eventos de soltar la tecla: se ignoran.
+            if let Event::Key(k) = event::read()?
+                && k.kind == KeyEventKind::Press
+            {
+                app.tecla(k);
+            }
+        }
+        if !app.reescanear {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Escanea en otro hilo mostrando el avance. `None` si se canceló.
+fn escanear_mostrando(
+    terminal: &mut DefaultTerminal,
+    ruta: &Path,
+    opciones: &Opciones,
+) -> io::Result<Option<Escaneo>> {
     let progreso = Arc::new(AtomicU64::new(0));
     let (tx, rx) = mpsc::channel();
     {
         let progreso = Arc::clone(&progreso);
         let ruta = ruta.to_path_buf();
+        let opciones = opciones.clone();
         // Si se cancela, el hilo queda suelto y muere al terminar el programa: solo lee.
         thread::spawn(move || {
             let _ = tx.send(escanear(&ruta, &opciones, &progreso));
@@ -58,9 +91,9 @@ fn correr(
     }
 
     let inicio = Instant::now();
-    let escaneo = loop {
+    loop {
         match rx.try_recv() {
-            Ok(r) => break r?,
+            Ok(r) => return r.map(Some),
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 return Err(io::Error::other("el escaneo se interrumpió"));
@@ -75,26 +108,7 @@ fn correr(
             && (matches!(k.code, KeyCode::Char('q') | KeyCode::Esc)
                 || (k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL)))
         {
-            return Ok(());
-        }
-    };
-
-    // Con millones de archivos, armar el árbol tarda alrededor de un segundo.
-    terminal.draw(|f| ui::dibujar_clasificando(f, escaneo.archivos.len() as u64))?;
-    let mut app = App::new(&escaneo, iconos);
-    while !app.salir {
-        app.tick();
-        terminal.draw(|f| ui::dibujar(f, &mut app))?;
-        // Mientras se buscan duplicados se redibuja solo, para mostrar el avance.
-        if app.busqueda.is_some() && !event::poll(Duration::from_millis(150))? {
-            continue;
-        }
-        // En Windows llegan también los eventos de soltar la tecla: se ignoran.
-        if let Event::Key(k) = event::read()?
-            && k.kind == KeyEventKind::Press
-        {
-            app.tecla(k);
+            return Ok(None);
         }
     }
-    Ok(())
 }
