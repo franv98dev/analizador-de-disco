@@ -17,7 +17,7 @@ pub struct Totales {
 }
 
 impl Totales {
-    fn sumar(&mut self, a: &Archivo) {
+    pub fn sumar(&mut self, a: &Archivo) {
         self.cantidad += 1;
         self.bytes += a.tamano;
         if let Some(t) = a.modificado {

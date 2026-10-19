@@ -1,5 +1,6 @@
 //! Números y tamaños en formato argentino: `1.234.567` y `1,5 GB`.
 
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 pub fn tamano(bytes: u64) -> String {
@@ -44,6 +45,24 @@ pub fn fecha(t: Option<SystemTime>) -> String {
             .format("%Y-%m-%d")
             .to_string(),
         None => "—".to_string(),
+    }
+}
+
+/// `ruta` relativa a `raiz` para mostrar; si es la raíz misma o no cuelga de ella, completa.
+pub fn relativa(raiz: &Path, ruta: &Path) -> String {
+    match ruta.strip_prefix(raiz) {
+        Ok(r) if !r.as_os_str().is_empty() => r.display().to_string(),
+        _ => ruta.display().to_string(),
+    }
+}
+
+/// Fecha y hora local, para el CSV.
+pub fn fecha_hora(t: Option<SystemTime>) -> String {
+    match t {
+        Some(t) => chrono::DateTime::<chrono::Local>::from(t)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+        None => String::new(),
     }
 }
 

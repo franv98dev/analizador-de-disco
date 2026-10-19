@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::categoria::Categoria;
 use crate::escaner::Escaneo;
-use crate::formato::{duracion, fecha, miles, porcentaje, tamano};
+use crate::formato::{duracion, fecha, miles, porcentaje, relativa, tamano};
 use crate::resumen::{Grupo, Resumen, mas_pesados};
 
 const LINEA: &str =
@@ -145,11 +145,4 @@ fn grupos(out: &mut dyn Write, raiz: &Path, grupos: &[Grupo]) -> io::Result<()> 
         writeln!(out, "  … y {} más", grupos.len() - MAX_GRUPOS)?;
     }
     Ok(())
-}
-
-fn relativa(raiz: &Path, ruta: &Path) -> String {
-    match ruta.strip_prefix(raiz) {
-        Ok(r) if !r.as_os_str().is_empty() => r.display().to_string(),
-        _ => ruta.display().to_string(),
-    }
 }
