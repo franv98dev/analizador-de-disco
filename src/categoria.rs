@@ -101,7 +101,14 @@ const MARCADORES_PROYECTO: &[&str] = &[
     "projectsettings", // Unity
     "project.godot",
 ];
-const EXTENSIONES_PROYECTO: &[&str] = &["sln", "csproj", "vbproj", "vcxproj", "xcodeproj"];
+const EXTENSIONES_PROYECTO: &[&str] = &[
+    "sln",
+    "csproj",
+    "vbproj",
+    "vcxproj",
+    "xcodeproj",
+    "uproject",
+];
 
 /// Clasifica un archivo por su extensión (y, para el audio, por su ruta).
 pub fn clasificar(ruta: &Path) -> Categoria {
@@ -212,6 +219,7 @@ mod tests {
         assert!(es_marcador_proyecto("package.json"));
         assert!(es_marcador_proyecto("Cargo.toml"));
         assert!(es_marcador_proyecto("MiApp.sln"));
+        assert!(es_marcador_proyecto("FirstGame.uproject"));
         assert!(!es_marcador_proyecto("package.json.bak"));
         assert!(!es_marcador_proyecto("foto.jpg"));
     }

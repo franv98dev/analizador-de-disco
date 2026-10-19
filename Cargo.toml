@@ -11,6 +11,7 @@ name = "analizador"
 path = "src/main.rs"
 
 [dependencies]
+blake3 = "1.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.30"

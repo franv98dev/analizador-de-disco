@@ -1,5 +1,6 @@
-//! Carpeta de prueba con un poco de todo: lo del usuario, sistema que hay que excluir
-//! y AppData para revisar. La usan `analizador demo` y los tests de integración.
+//! Carpeta de prueba con un poco de todo: lo del usuario, sistema que hay que excluir,
+//! AppData para revisar, duplicados y cosas probablemente borrables.
+//! La usan `analizador demo` y los tests de integración.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -10,7 +11,8 @@ use std::time::{Duration, SystemTime};
 pub const MARCA: &str = "LEEME-demo.txt";
 const TEXTO_MARCA: &str = "Carpeta creada por `analizador demo`. Se puede borrar.\n";
 
-/// (ruta relativa, tamaño en KB, año de última modificación)
+/// (ruta relativa, tamaño en KB, año de última modificación). Cada archivo tiene contenido
+/// propio (derivado de su ruta), así dos archivos del mismo tamaño no son duplicados.
 pub const ARCHIVOS: &[(&str, u64, Option<i32>)] = &[
     // Fotos
     ("Imágenes/Vacaciones 2019/IMG_0001.jpg", 300, Some(2019)),
@@ -44,13 +46,20 @@ pub const ARCHIVOS: &[(&str, u64, Option<i32>)] = &[
     // Comprimidos
     ("Descargas/fotos-viejas.zip", 1024, Some(2018)),
     ("Descargas/backup.7z", 512, Some(2018)),
-    // Instaladores
+    // Instaladores (el portable no está en Descargas ni se llama "setup": no es borrable)
     ("Descargas/setup.exe", 3072, Some(2022)),
     ("Descargas/ubuntu.iso", 4096, Some(2024)),
     ("Descargas/driver.msi", 700, Some(2016)),
+    ("Varios/juego-portable/juego.exe", 300, Some(2017)),
     // Otros
     ("Varios/archivo.xyz", 3, None),
     ("Varios/SIN_EXTENSION", 1, None),
+    // Probablemente borrable: temporales y cachés
+    ("Documentos/~$esupuesto.xlsx", 1, None),
+    ("Descargas/pelicula.mp4.crdownload", 500, None),
+    ("Varios/viejo.tmp", 10, None),
+    ("Imágenes/Thumbs.db", 20, None),
+    ("Proyectos/mi-web/node_modules/react/index.js", 50, None),
     // Revisar: AppData no es sistema, puede tener cosas valiosas
     ("AppData/Roaming/WhatsApp/databases/msgstore.db", 600, None),
     (
@@ -59,6 +68,7 @@ pub const ARCHIVOS: &[(&str, u64, Option<i32>)] = &[
         None,
     ),
     ("AppData/LocalLow/Juego/partida1.sav", 10, None),
+    ("AppData/Local/Temp/instalador-a-medias.tmp", 200, None),
     // Sistema: tiene que quedar excluido
     ("Windows/System32/kernel32.dll", 900, None),
     ("Program Files/Programa/programa.exe", 2000, None),
@@ -67,6 +77,30 @@ pub const ARCHIVOS: &[(&str, u64, Option<i32>)] = &[
     ("System Volume Information/tracking.log", 5, None),
     ("pagefile.sys", 64, None),
 ];
+
+/// Copias exactas: (ruta de la copia, ruta del original, año de la copia).
+pub const COPIAS: &[(&str, &str, Option<i32>)] = &[
+    (
+        "Descargas/IMG_0001 (1).jpg",
+        "Imágenes/Vacaciones 2019/IMG_0001.jpg",
+        Some(2020),
+    ),
+    ("Documentos/CV copia.pdf", "Documentos/CV.pdf", Some(2015)),
+    ("Descargas/CV.pdf", "Documentos/CV.pdf", Some(2021)),
+    (
+        "Escritorio/cumple.mp4",
+        "Videos/cumple de la abuela.mp4",
+        Some(2016),
+    ),
+];
+
+/// Falsos duplicados: mismo tamaño, mismo principio y mismo final que el original,
+/// pero un byte distinto en el medio. Solo el hash completo los distingue.
+pub const FALSOS_DUPLICADOS: &[(&str, &str, Option<i32>)] = &[(
+    "Imágenes/IMG_0001-editada.jpg",
+    "Imágenes/Vacaciones 2019/IMG_0001.jpg",
+    Some(2019),
+)];
 
 /// Crea la demo en `destino`. Si ya existe y es una demo anterior la recrea;
 /// si existe y no es una demo, no toca nada.
@@ -88,15 +122,54 @@ pub fn crear(destino: &Path) -> io::Result<()> {
     fs::write(destino.join(MARCA), TEXTO_MARCA)?;
 
     for (relativa, kb, anio) in ARCHIVOS {
-        let ruta = destino.join(relativa);
-        fs::create_dir_all(ruta.parent().expect("las rutas de la demo tienen carpeta"))?;
-        let mut f = File::create(&ruta)?;
-        f.write_all(&vec![0u8; (*kb * 1024) as usize])?;
-        if let Some(anio) = anio {
-            f.set_modified(inicio_de(*anio))?;
-        }
+        escribir(destino, relativa, &contenido(relativa, *kb), *anio)?;
+    }
+    for (relativa, original, anio) in COPIAS {
+        escribir(destino, relativa, &contenido_de(original), *anio)?;
+    }
+    for (relativa, original, anio) in FALSOS_DUPLICADOS {
+        let mut datos = contenido_de(original);
+        let medio = datos.len() / 2;
+        datos[medio] ^= 0xFF;
+        escribir(destino, relativa, &datos, *anio)?;
     }
     Ok(())
+}
+
+fn escribir(destino: &Path, relativa: &str, datos: &[u8], anio: Option<i32>) -> io::Result<()> {
+    let ruta = destino.join(relativa);
+    fs::create_dir_all(ruta.parent().expect("las rutas de la demo tienen carpeta"))?;
+    let mut f = File::create(&ruta)?;
+    f.write_all(datos)?;
+    if let Some(anio) = anio {
+        f.set_modified(inicio_de(anio))?;
+    }
+    Ok(())
+}
+
+fn contenido_de(original: &str) -> Vec<u8> {
+    let (_, kb, _) = ARCHIVOS
+        .iter()
+        .find(|(r, _, _)| *r == original)
+        .expect("el original de una copia tiene que estar en ARCHIVOS");
+    contenido(original, *kb)
+}
+
+/// Bytes pseudoaleatorios a partir de la ruta (xorshift): siempre los mismos para la misma ruta.
+fn contenido(semilla: &str, kb: u64) -> Vec<u8> {
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    for b in semilla.bytes() {
+        x = (x ^ b as u64).wrapping_mul(0x100_0000_01B3);
+    }
+    let mut datos = Vec::with_capacity((kb * 1024) as usize);
+    while datos.len() < (kb * 1024) as usize {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        datos.extend_from_slice(&x.to_le_bytes());
+    }
+    datos.truncate((kb * 1024) as usize);
+    datos
 }
 
 /// 1 de enero del año a las 12:00 UTC (aproximado, alcanza para la demo).
@@ -109,4 +182,16 @@ fn inicio_de(anio: i32) -> SystemTime {
 
 fn es_bisiesto(a: i32) -> bool {
     (a % 4 == 0 && a % 100 != 0) || a % 400 == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_contenido_depende_de_la_ruta_y_es_estable() {
+        assert_eq!(contenido("a.jpg", 2), contenido("a.jpg", 2));
+        assert_ne!(contenido("a.jpg", 2), contenido("b.jpg", 2));
+        assert_eq!(contenido("a.jpg", 3).len(), 3 * 1024);
+    }
 }

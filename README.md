@@ -18,6 +18,8 @@ analizador escanear /media/pendrive     # un pendrive o disco externo
 analizador escanear ~ --top 10          # los 10 más pesados de cada categoría
 analizador escanear D:\ --hilos 2       # menos hilos: a veces rinde más en un HDD
 analizador informe C:\ --salida D:\     # informe Markdown + CSV (muestra antes qué va a escribir)
+analizador informe C:\ --duplicados     # el informe con duplicados (lee el contenido: tarda más)
+analizador duplicados D:\ --top 50      # solo duplicados: grupos de copias y cuánto se libera
 analizador demo                         # crea una carpeta de prueba y la escanea
 analizador demo --ver                   # lo mismo, en la interfaz
 ```
@@ -56,7 +58,8 @@ clasificado. Los dos paneles van juntos: al moverte por la izquierda, la derecha
 | `Enter` / `→` | entrar a la carpeta | ver los archivos de la categoría, de mayor a menor; en un archivo o grupo, saltar a su carpeta en el disco |
 | `⌫` / `←` | subir | volver a las categorías / cambiar de vista |
 | `Tab` | cambiar de panel | cambiar de panel |
-| `1`–`4` | Categorías, Proyectos, Revisar, Excluido | ídem |
+| `1`–`8` | Categorías, Pesados, Antigüedad, Borrable, Duplicados, Proyectos, Revisar, Excluido | ídem |
+| `d` | buscar duplicados en segundo plano (otra vez `d`: cancelar) | ídem |
 | `e` | exportar el informe (elegir carpeta → vista previa → confirmar) | ídem |
 | `q` | salir | salir |
 
@@ -65,12 +68,43 @@ clasificado. Los dos paneles van juntos: al moverte por la izquierda, la derecha
 
 ## El informe
 
-- **Markdown:** resumen por categoría con fechas, los 20 más pesados de cada una, proyectos,
-  carpetas para revisar, lo excluido y lo que no se pudo leer.
-- **CSV:** una fila por archivo (`ruta;categoria;zona;proyecto;carpeta_revisar;bytes;tamano;modificado`),
+- **Markdown:** resumen por categoría con fechas, los 20 más pesados de cada una, probablemente
+  borrable, duplicados (si se buscaron), antigüedad por año, proyectos, carpetas para revisar,
+  lo excluido y lo que no se pudo leer.
+- **CSV:** una fila por archivo
+  (`ruta;categoria;zona;proyecto;carpeta_revisar;bytes;tamano;modificado;borrable;grupo_duplicado`),
   separado por `;` y en UTF-8 con BOM, para que el Excel en español lo abra bien con doble clic.
 - Antes de escribir siempre muestra qué archivos va a crear y pide confirmación. Si ya existen,
   avisa que se van a sobrescribir. Si alguno aparece entre la vista previa y la escritura, no lo pisa.
+
+## Ayuda para decidir
+
+**Duplicados** (`d` en la interfaz, `analizador duplicados`, o `informe --duplicados`). En tres pasadas,
+de la más barata a la más cara:
+
+1. Por **tamaño exacto**: no lee nada, viene del escaneo. Los tamaños únicos se descartan.
+2. Por un **hash del principio y el final** de cada archivo (128 KB como mucho).
+3. Por el **hash completo** (BLAKE3), solo de los que siguen empatados.
+
+Es lo único que lee el contenido de los archivos, por eso corre solo cuando se pide y muestra el avance.
+De cada grupo sugiere **conservar el más viejo** y muestra cuánto se libera borrando el resto.
+Si un archivo cambió entre el escaneo y la comparación, no se compara. No se miran archivos de menos
+de 1 KB, ni los de "revisar" ni los de proyectos (`node_modules` está lleno de archivos idénticos).
+
+**Probablemente borrable**, cada sugerencia con su motivo:
+
+| Motivo | Qué se sugiere | Qué no |
+|---|---|---|
+| Temporal | `.tmp`, descargas a medias (`.crdownload`, `.part`), `~$` de Office, `Thumbs.db`, volcados `.dmp`, carpetas `Temp` | |
+| Caché | carpetas `Cache`, `Code Cache`, `.cache`, `npm-cache`…; `node_modules` y `__pycache__` **dentro de un proyecto** | el `node_modules` de un programa instalado o el global de npm (son parte del programa) |
+| Instalador | `.msi`, `.apk`, `.deb`…; `.exe` e `.iso` en Descargas o que se llaman setup/install | un programa portable o el `.iso` de un juego para emulador |
+| Copia | las copias de un grupo de duplicados, nunca la que se conserva | |
+
+Nada dentro de `Package Cache` (Windows lo usa para desinstalar). Las reglas miran la ruta **relativa
+a lo escaneado**: si se escanea algo que vive dentro de `Temp`, no se marca todo como temporal.
+
+**Los más pesados** de cualquier tipo, y la **antigüedad** por año de última modificación (con Enter en un
+año se ven sus archivos), siempre de la carpeta seleccionada.
 
 ## Qué hace
 
@@ -104,7 +138,8 @@ Se listan aparte, agrupadas por programa (`AppData\Roaming\WhatsApp`), para revi
 Hace falta [Rust](https://rustup.rs) (en Windows, también las herramientas de C++ de Visual Studio).
 
 ```sh
-cargo test               # clasificación, exclusiones, escaneo, árbol, navegación, informe y pantalla
+cargo test               # clasificación, exclusiones, escaneo, árbol, navegación, informe, pantalla,
+                         # duplicados, borrable y antigüedad
 cargo build --release    # ejecutable en target/release/analizador(.exe)
 cargo run --release --example captura -- <ruta> [ancho] [alto]   # la interfaz como texto
 ```
@@ -117,6 +152,13 @@ La interfaz está separada en un estado (`app.rs`, qué hace cada tecla) y un di
 navegación se testea entera sin terminal, y la pantalla se dibuja sobre el `TestBackend` de ratatui
 para verificar lo que se ve, incluso en terminales chicas y con emoji. La exportación se prueba con
 nombres raros (`;`, comillas, acentos) y verificando que nunca pise un archivo sin permiso.
+
+Para los duplicados, cada archivo de la demo tiene contenido propio, y hay copias exactas y un
+**falso duplicado** (mismo tamaño, mismo principio y mismo final, un byte distinto en el medio) que
+solo la tercera pasada puede descartar. También se prueba que buscar duplicados no modifique nada,
+que se pueda cancelar, y que un archivo que cambió después del escaneo no se dé por duplicado.
+Las reglas de "borrable" tienen un test por cada caso que sí y por cada caso que no, varios sacados
+de falsos positivos reales encontrados al probarlo en una carpeta de usuario.
 
 ## Por qué Rust
 
@@ -134,7 +176,7 @@ Go con Bubble Tea habría sido más simple de escribir, pero Rust rinde más en 
 |---|---|---|
 | 1. Escaneo y clasificación en la terminal | ✅ | Categorías, exclusiones, "revisar", proyectos, tiempo y archivos/s, carpeta de demo, tests |
 | 2. Interfaz de dos paneles (ratatui) + informe Markdown/CSV | ✅ | Árbol navegable con tamaños, clasificación de la carpeta seleccionada, saltos de un panel al otro, exportación con vista previa |
-| 3. Duplicados y "probablemente borrable" | ⏳ | |
+| 3. Duplicados y "probablemente borrable" | ✅ | Duplicados en tres pasadas, borrable con motivo, más pesados, antigüedad, todo en la interfaz y en el informe |
 | 4. Acciones: copiar/mover/`_para_borrar`, con confirmación y dry-run | ⏳ | |
 | 5. Lectura del MFT en Windows | ⏳ | |
 | 6. Build optimizado y ejecutables para Windows y Linux | ⏳ | |
@@ -155,3 +197,21 @@ En Windows se usa `read_dir`, que trae tamaño y fecha en la misma llamada que l
 
 Con la misma carpeta (1,16 millones de archivos): armar el árbol tarda ~1 s, cada tecla ~5 ms
 y cada pantalla ~1,5 ms.
+
+### Fase 3: duplicados y borrable con un disco real
+
+Misma carpeta de usuario (1,16 millones de archivos, SSD NVMe):
+
+| Qué | Resultado |
+|---|---|
+| Candidatos a duplicado (comparten tamaño con otro) | 83.806 archivos |
+| Leído para compararlos | 7,1 GB en 1 min 05 s, 110 MB/s |
+| Grupos de duplicados | 3.338 (5.500 copias de más) |
+| Liberable borrando las copias | 3,2 GB |
+| Probablemente borrable (temporales, cachés, instaladores) | 40,5 GB |
+
+Se midió antes de reconocer los proyectos de Unreal (`.uproject`): ahora sus cachés internas
+quedan afuera de la búsqueda de duplicados, así que los grupos serían algunos menos.
+
+Probarlo con datos reales sacó a la luz falsos positivos que ahora tienen su test: el `node_modules`
+global de npm y el de programas instalados, el `.iso` de un juego para emulador y `Package Cache`.

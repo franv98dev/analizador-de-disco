@@ -1,19 +1,27 @@
 //! Estado de la interfaz y qué hace cada tecla. No dibuja nada ni toca la terminal,
 //! así se puede testear la navegación entera sin pantalla.
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 
-use crate::arbol::{Arbol, Tipo};
+use crate::antiguedad;
+use crate::arbol::{Arbol, Suma, Tipo};
+use crate::borrable::{self, Item};
 use crate::categoria::Categoria;
+use crate::duplicados::{self, Duplicados, Progreso};
 use crate::escaner::{Archivo, Escaneo, Excluido};
 use crate::exportar::{self, Plan};
 use crate::iconos::Iconos;
 use crate::resumen::{Grupo, Resumen, Totales};
 
-/// Cuántos archivos listar como máximo al abrir una categoría.
+/// Cuántos archivos listar como máximo en una lista de "más pesados".
 pub const MAX_ARCHIVOS: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,14 +33,22 @@ pub enum Panel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pestana {
     Categorias,
+    Pesados,
+    Antiguedad,
+    Borrable,
+    Duplicados,
     Proyectos,
     Revisar,
     Excluido,
 }
 
 impl Pestana {
-    pub const TODAS: [Pestana; 4] = [
+    pub const TODAS: [Pestana; 8] = [
         Pestana::Categorias,
+        Pestana::Pesados,
+        Pestana::Antiguedad,
+        Pestana::Borrable,
+        Pestana::Duplicados,
         Pestana::Proyectos,
         Pestana::Revisar,
         Pestana::Excluido,
@@ -41,6 +57,10 @@ impl Pestana {
     pub fn nombre(self) -> &'static str {
         match self {
             Pestana::Categorias => "Categorías",
+            Pestana::Pesados => "Pesados",
+            Pestana::Antiguedad => "Antigüedad",
+            Pestana::Borrable => "Borrable",
+            Pestana::Duplicados => "Duplicados",
             Pestana::Proyectos => "Proyectos",
             Pestana::Revisar => "Revisar",
             Pestana::Excluido => "Excluido",
@@ -56,14 +76,34 @@ pub enum Entrada {
     Archivo(u32),
 }
 
+/// De dónde salió una lista de archivos (para poder volver).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filtro {
+    Categoria(Categoria),
+    Anio(Option<i32>),
+}
+
 /// Lo que muestra el panel derecho.
 #[derive(Debug, Clone)]
 pub enum Derecha {
     Categorias,
-    /// Archivos de una categoría debajo del foco, de mayor a menor.
-    Archivos(Categoria, Vec<u32>),
+    /// Archivos debajo del foco, de mayor a menor. Sin filtro es la pestaña Pesados.
+    Archivos(Option<Filtro>, Vec<u32>),
+    Anios(Vec<(Option<i32>, Suma)>),
+    Borrable(Vec<Item>),
+    /// Índices de los grupos de duplicados con algún archivo debajo del foco.
+    Duplicados(Vec<usize>),
+    /// Las copias de un grupo.
+    Copias(usize),
     Grupos(Vec<Grupo>),
     Excluidos(Vec<Excluido>),
+}
+
+impl Derecha {
+    /// Se llegó con Enter desde otra vista: ← vuelve en vez de cambiar de pestaña.
+    fn es_subvista(&self) -> bool {
+        matches!(self, Derecha::Archivos(Some(_), _) | Derecha::Copias(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,10 +119,24 @@ pub enum Exportar {
     Error(String),
 }
 
+/// Búsqueda de duplicados corriendo en otro hilo.
+pub struct Busqueda {
+    pub progreso: Arc<Progreso>,
+    pub candidatos: usize,
+    pub bytes: u64,
+    rx: Receiver<io::Result<Duplicados>>,
+}
+
 pub struct App<'a> {
     pub escaneo: &'a Escaneo,
     pub arbol: Arbol,
     pub resumen: Resumen,
+    /// Sugerencias de "probablemente borrable" de todo el escaneo.
+    pub borrable: Vec<Item>,
+    pub duplicados: Option<Duplicados>,
+    pub busqueda: Option<Busqueda>,
+    /// Mensaje para mostrar (por ejemplo, si falló la búsqueda de duplicados).
+    pub aviso: Option<String>,
     pub iconos: Iconos,
     pub panel: Panel,
     /// Carpeta abierta en el panel izquierdo.
@@ -107,6 +161,10 @@ impl<'a> App<'a> {
             escaneo,
             arbol: Arbol::de(escaneo),
             resumen: Resumen::de(escaneo),
+            borrable: borrable::analizar(escaneo, None),
+            duplicados: None,
+            busqueda: None,
+            aviso: None,
             iconos,
             panel: Panel::Disco,
             actual: Arbol::RAIZ,
@@ -139,9 +197,17 @@ impl<'a> App<'a> {
         match &self.derecha {
             Derecha::Categorias => Categoria::TODAS.len(),
             Derecha::Archivos(_, v) => v.len(),
+            Derecha::Anios(v) => v.len(),
+            Derecha::Borrable(v) => v.len(),
+            Derecha::Duplicados(v) => v.len(),
+            Derecha::Copias(g) => self.grupo(*g).map_or(0, |g| g.archivos.len()),
             Derecha::Grupos(v) => v.len(),
             Derecha::Excluidos(v) => v.len(),
         }
+    }
+
+    pub fn grupo(&self, g: usize) -> Option<&duplicados::GrupoDuplicado> {
+        self.duplicados.as_ref().and_then(|d| d.grupos.get(g))
     }
 
     pub fn tecla(&mut self, k: KeyEvent) {
@@ -167,7 +233,8 @@ impl<'a> App<'a> {
                     .unwrap_or_else(|_| ".".to_string());
                 self.exportar = Some(Exportar::Destino(destino));
             }
-            KeyCode::Char(c @ '1'..='4') => {
+            KeyCode::Char('d') => self.alternar_busqueda(),
+            KeyCode::Char(c @ '1'..='8') => {
                 self.cambiar_pestana(Pestana::TODAS[c as usize - '1' as usize]);
             }
             _ => match self.panel {
@@ -215,22 +282,18 @@ impl<'a> App<'a> {
                 self.actualizar_detalle();
             }
             KeyCode::Left => {
-                if matches!(self.derecha, Derecha::Archivos(..)) {
-                    self.volver_a_categorias();
+                if self.derecha.es_subvista() {
+                    self.volver();
                 } else {
                     self.cambiar_pestana(anterior(self.pestana));
                 }
             }
             KeyCode::Right => {
-                if !matches!(self.derecha, Derecha::Archivos(..)) {
+                if !self.derecha.es_subvista() {
                     self.cambiar_pestana(siguiente(self.pestana));
                 }
             }
-            KeyCode::Backspace | KeyCode::Esc => {
-                if matches!(self.derecha, Derecha::Archivos(..)) {
-                    self.volver_a_categorias();
-                }
-            }
+            KeyCode::Backspace | KeyCode::Esc => self.volver(),
             KeyCode::Enter => self.entrar_derecha(),
             _ => {}
         }
@@ -242,15 +305,31 @@ impl<'a> App<'a> {
         };
         let destino: Option<(PathBuf, Option<u32>)> = match &self.derecha {
             Derecha::Categorias => {
-                let c = Categoria::TODAS[i];
-                let archivos = self.archivos_de(c, self.foco);
-                self.derecha = Derecha::Archivos(c, archivos);
-                self.tabla_der.select(Some(0));
+                let filtro = Filtro::Categoria(Categoria::TODAS[i]);
+                self.abrir_lista(filtro);
                 return;
             }
-            Derecha::Archivos(_, v) => v.get(i).map(|&a| {
-                let ruta = &self.archivo(a).ruta;
-                (ruta.parent().unwrap_or(ruta).to_path_buf(), Some(a))
+            Derecha::Anios(v) => {
+                if let Some(&(anio, _)) = v.get(i) {
+                    self.abrir_lista(Filtro::Anio(anio));
+                }
+                return;
+            }
+            Derecha::Duplicados(v) => {
+                if let Some(&g) = v.get(i) {
+                    self.derecha = Derecha::Copias(g);
+                    self.tabla_der.select(Some(0));
+                }
+                return;
+            }
+            Derecha::Archivos(_, v) => v.get(i).map(|&a| self.donde_esta(a)),
+            Derecha::Copias(g) => self
+                .grupo(*g)
+                .and_then(|g| g.archivos.get(i))
+                .map(|&a| self.donde_esta(a)),
+            Derecha::Borrable(v) => v.get(i).map(|item| match item.archivo {
+                Some(a) => self.donde_esta(a),
+                None => (item.ruta.clone(), None),
             }),
             Derecha::Grupos(v) => v.get(i).map(|g| (g.ruta.to_path_buf(), None)),
             Derecha::Excluidos(v) => v
@@ -260,6 +339,48 @@ impl<'a> App<'a> {
         if let Some((carpeta, archivo)) = destino {
             self.ir_a(&carpeta, archivo);
         }
+    }
+
+    /// Carpeta de un archivo, para saltar a él en el panel del disco.
+    fn donde_esta(&self, a: u32) -> (PathBuf, Option<u32>) {
+        let ruta = &self.archivo(a).ruta;
+        (ruta.parent().unwrap_or(ruta).to_path_buf(), Some(a))
+    }
+
+    fn abrir_lista(&mut self, filtro: Filtro) {
+        let archivos = self.mas_pesados(self.foco, Some(filtro));
+        self.derecha = Derecha::Archivos(Some(filtro), archivos);
+        self.tabla_der.select(Some(0));
+    }
+
+    /// Desde una subvista, vuelve a la vista de la que se vino con esa fila seleccionada.
+    fn volver(&mut self) {
+        let seleccion = match &self.derecha {
+            Derecha::Archivos(Some(Filtro::Categoria(c)), _) => Some(*c as usize),
+            Derecha::Archivos(Some(Filtro::Anio(a)), _) => {
+                let a = *a;
+                self.cargar_pestana();
+                if let Derecha::Anios(v) = &self.derecha {
+                    let i = v.iter().position(|(x, _)| *x == a);
+                    self.tabla_der.select(i);
+                }
+                self.actualizar_detalle();
+                return;
+            }
+            Derecha::Copias(g) => {
+                let g = *g;
+                self.cargar_pestana();
+                if let Derecha::Duplicados(v) = &self.derecha {
+                    let i = v.iter().position(|x| *x == g);
+                    self.tabla_der.select(i);
+                }
+                return;
+            }
+            _ => return,
+        };
+        self.cargar_pestana();
+        self.tabla_der.select(seleccion);
+        self.actualizar_detalle();
     }
 
     /// Abre `carpeta` a la izquierda y, si se indica, selecciona ese archivo.
@@ -329,7 +450,7 @@ impl<'a> App<'a> {
         };
         let cambio = foco != self.foco;
         self.foco = foco;
-        if cambio || !matches!(self.derecha, Derecha::Archivos(..)) {
+        if cambio || !self.derecha.es_subvista() {
             self.cargar_pestana();
         }
     }
@@ -339,22 +460,38 @@ impl<'a> App<'a> {
         self.cargar_pestana();
     }
 
-    fn volver_a_categorias(&mut self) {
-        let c = match &self.derecha {
-            Derecha::Archivos(c, _) => *c,
-            _ => Categoria::Fotos,
-        };
-        self.derecha = Derecha::Categorias;
-        self.tabla_der.select(Some(c as usize));
-        self.actualizar_detalle();
-    }
-
     /// Recalcula el panel derecho para el foco actual.
     fn cargar_pestana(&mut self) {
         let base = self.arbol.ruta(self.foco);
         let bajo = |r: &Path| r.starts_with(&base);
         self.derecha = match self.pestana {
             Pestana::Categorias => Derecha::Categorias,
+            Pestana::Pesados => Derecha::Archivos(None, self.mas_pesados(self.foco, None)),
+            Pestana::Antiguedad => Derecha::Anios(antiguedad::por_anio(
+                self.arbol
+                    .archivos_bajo(self.foco)
+                    .iter()
+                    .map(|&i| self.archivo(i))
+                    .filter(|a| a.revisar.is_none()),
+            )),
+            Pestana::Borrable => Derecha::Borrable(
+                self.borrable
+                    .iter()
+                    .filter(|i| bajo(&i.ruta))
+                    .cloned()
+                    .collect(),
+            ),
+            Pestana::Duplicados => Derecha::Duplicados(match &self.duplicados {
+                Some(d) => (0..d.grupos.len())
+                    .filter(|&g| {
+                        d.grupos[g]
+                            .archivos
+                            .iter()
+                            .any(|&a| bajo(&self.archivo(a).ruta))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            }),
             Pestana::Proyectos => Derecha::Grupos(
                 self.resumen
                     .proyectos
@@ -407,17 +544,22 @@ impl<'a> App<'a> {
         };
     }
 
-    /// Los más pesados de una categoría debajo de una carpeta (sin "revisar").
-    pub fn archivos_de(&self, c: Categoria, id: usize) -> Vec<u32> {
+    /// Los más pesados debajo de una carpeta. Con filtro, solo lo del usuario
+    /// (sin "revisar") de esa categoría o ese año; sin filtro, todo.
+    pub fn mas_pesados(&self, id: usize, filtro: Option<Filtro>) -> Vec<u32> {
+        let pasa = |a: &Archivo| match filtro {
+            None => true,
+            Some(Filtro::Categoria(c)) => a.categoria == c && a.revisar.is_none(),
+            Some(Filtro::Anio(anio)) => {
+                antiguedad::anio(a.modificado) == anio && a.revisar.is_none()
+            }
+        };
         let mut v: Vec<u32> = self
             .arbol
             .archivos_bajo(id)
             .iter()
             .copied()
-            .filter(|&a| {
-                let a = self.archivo(a);
-                a.categoria == c && a.revisar.is_none()
-            })
+            .filter(|&a| pasa(self.archivo(a)))
             .collect();
         let tam = |i: &u32| std::cmp::Reverse(self.archivo(*i).tamano);
         if v.len() > MAX_ARCHIVOS {
@@ -426,6 +568,50 @@ impl<'a> App<'a> {
         }
         v.sort_by_key(tam);
         v
+    }
+
+    /// `d`: busca duplicados en otro hilo, o cancela la búsqueda en curso.
+    fn alternar_busqueda(&mut self) {
+        if let Some(b) = &self.busqueda {
+            b.progreso.cancelar.store(true, Ordering::Relaxed);
+            return;
+        }
+        let candidatos = duplicados::candidatos(self.escaneo);
+        let progreso = Arc::new(Progreso::default());
+        let (tx, rx) = mpsc::channel();
+        self.busqueda = Some(Busqueda {
+            progreso: Arc::clone(&progreso),
+            candidatos: candidatos.len(),
+            bytes: duplicados::bytes_candidatos(&candidatos),
+            rx,
+        });
+        thread::spawn(move || {
+            let _ = tx.send(duplicados::buscar(candidatos, &progreso, None));
+        });
+        self.aviso = None;
+        self.cambiar_pestana(Pestana::Duplicados);
+    }
+
+    /// Revisa si terminó la búsqueda de duplicados. Se llama en cada vuelta del bucle.
+    pub fn tick(&mut self) {
+        let Some(b) = &self.busqueda else {
+            return;
+        };
+        let resultado = match b.rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(io::Error::other("la búsqueda se interrumpió")),
+        };
+        self.busqueda = None;
+        match resultado {
+            Ok(d) if d.cancelado => self.aviso = Some("Búsqueda cancelada.".to_string()),
+            Ok(d) => {
+                self.borrable = borrable::analizar(self.escaneo, Some(&d));
+                self.duplicados = Some(d);
+            }
+            Err(err) => self.aviso = Some(format!("No se pudieron buscar duplicados: {err}")),
+        }
+        self.cargar_pestana();
     }
 
     fn tecla_exportar(&mut self, code: KeyCode) {
@@ -449,7 +635,8 @@ impl<'a> App<'a> {
                 Some(Exportar::Confirmar { plan, sobrescribe })
             }
             (Exportar::Confirmar { plan, sobrescribe }, KeyCode::Enter | KeyCode::Char('s')) => {
-                match exportar::escribir(&plan, self.escaneo, sobrescribe) {
+                match exportar::escribir(&plan, self.escaneo, self.duplicados.as_ref(), sobrescribe)
+                {
                     Ok(()) => Some(Exportar::Listo(format!(
                         "Listo:\n{}\n{}",
                         plan.markdown.display(),

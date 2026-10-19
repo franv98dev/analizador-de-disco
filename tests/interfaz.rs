@@ -10,7 +10,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use analizador_de_disco::app::{App, Derecha, Entrada, Exportar, Panel};
+use analizador_de_disco::app::{App, Derecha, Entrada, Exportar, Filtro, Panel};
 use analizador_de_disco::arbol::{Arbol, Tipo};
 use analizador_de_disco::categoria::Categoria;
 use analizador_de_disco::escaner::{Escaneo, Opciones, escanear};
@@ -83,9 +83,9 @@ fn el_arbol_suma_cada_subcarpeta() {
     assert_eq!(descargas.categoria(Categoria::Comprimidos).cantidad, 2);
     assert_eq!(
         descargas.total().bytes,
-        (1024 + 512 + 3072 + 4096 + 700) * 1024
+        (1024 + 512 + 3072 + 4096 + 700 + 300 + 150 + 500) * 1024
     );
-    assert_eq!(a.archivos_bajo(nodo(&a, &e, "Descargas")).len(), 5);
+    assert_eq!(a.archivos_bajo(nodo(&a, &e, "Descargas")).len(), 8);
     assert_eq!(a.archivos_bajo(Arbol::RAIZ).len(), e.archivos.len());
 }
 
@@ -116,7 +116,7 @@ fn archivos_bajo_una_carpeta_son_solo_los_de_adentro() {
     let id = nodo(&a, &e, "Imágenes");
     let base = a.ruta(id);
     let bajo = a.archivos_bajo(id);
-    assert_eq!(bajo.len(), 3);
+    assert_eq!(bajo.len(), 5);
     assert!(
         bajo.iter()
             .all(|&i| e.archivos[i as usize].ruta.starts_with(&base))
@@ -207,7 +207,7 @@ fn desde_una_categoria_se_salta_al_archivo_en_el_disco() {
     let Derecha::Archivos(c, v) = &app.derecha else {
         panic!("tendría que listar archivos");
     };
-    assert_eq!(*c, Categoria::Instaladores);
+    assert_eq!(*c, Some(Filtro::Categoria(Categoria::Instaladores)));
     assert_eq!(v.len(), 3);
     assert!(
         app.archivo(v[0]).ruta.ends_with("ubuntu.iso"),
@@ -232,7 +232,7 @@ fn volver_de_la_lista_de_archivos_a_las_categorias() {
     tecla(&mut app, KeyCode::Enter);
     assert!(matches!(
         app.derecha,
-        Derecha::Archivos(Categoria::Videos, _)
+        Derecha::Archivos(Some(Filtro::Categoria(Categoria::Videos)), _)
     ));
     tecla(&mut app, KeyCode::Left);
     assert!(matches!(app.derecha, Derecha::Categorias));
@@ -244,7 +244,7 @@ fn las_pestanas_se_filtran_por_la_carpeta_en_foco() {
     let (_d, e) = escanear_demo();
     let mut app = App::new(&e, Iconos::Simples);
 
-    tecla(&mut app, KeyCode::Char('2'));
+    tecla(&mut app, KeyCode::Char('6'));
     assert!(
         matches!(&app.derecha, Derecha::Grupos(v) if v.is_empty()),
         "Descargas no tiene proyectos"
@@ -256,10 +256,10 @@ fn las_pestanas_se_filtran_por_la_carpeta_en_foco() {
 
     let appdata = nodo(&app.arbol, &e, "AppData");
     seleccionar_carpeta(&mut app, appdata);
-    tecla(&mut app, KeyCode::Char('3'));
-    assert!(matches!(&app.derecha, Derecha::Grupos(v) if v.len() == 3));
+    tecla(&mut app, KeyCode::Char('7'));
+    assert!(matches!(&app.derecha, Derecha::Grupos(v) if v.len() == 4));
 
-    tecla(&mut app, KeyCode::Char('4'));
+    tecla(&mut app, KeyCode::Char('8'));
     assert!(matches!(&app.derecha, Derecha::Excluidos(v) if v.is_empty()));
 }
 
@@ -269,7 +269,7 @@ fn desde_revisar_se_abre_la_carpeta_del_programa() {
     let mut app = App::new(&e, Iconos::Simples);
     let appdata = nodo(&app.arbol, &e, "AppData");
     seleccionar_carpeta(&mut app, appdata);
-    tecla(&mut app, KeyCode::Char('3'));
+    tecla(&mut app, KeyCode::Char('7'));
     tecla(&mut app, KeyCode::Tab);
     tecla(&mut app, KeyCode::Enter);
     // El más pesado es WhatsApp (600 KB).
@@ -287,7 +287,7 @@ fn las_fechas_del_detalle_son_las_de_la_categoria_en_foco() {
         tecla(&mut app, KeyCode::Down);
     }
     let t = app.detalle.clone().expect("hay detalle");
-    assert_eq!(t.cantidad, 4);
+    assert_eq!(t.cantidad, 6);
     let anio = chrono::DateTime::<chrono::Utc>::from(t.mas_viejo.unwrap())
         .format("%Y")
         .to_string();
@@ -363,7 +363,7 @@ fn cancelar_la_vista_previa_no_escribe_nada() {
 fn csv_con_bom_encabezado_y_una_fila_por_archivo() {
     let (_d, e) = escanear_demo();
     let mut out = Vec::new();
-    exportar::csv(&e, &mut out).unwrap();
+    exportar::csv(&e, None, &mut out).unwrap();
     let texto = String::from_utf8(out).unwrap();
     assert!(texto.starts_with('\u{feff}'), "BOM para Excel");
     let lineas: Vec<&str> = texto
@@ -373,12 +373,12 @@ fn csv_con_bom_encabezado_y_una_fila_por_archivo() {
         .collect();
     assert_eq!(
         lineas[0],
-        "ruta;categoria;zona;proyecto;carpeta_revisar;bytes;tamano;modificado"
+        "ruta;categoria;zona;proyecto;carpeta_revisar;bytes;tamano;modificado;borrable;grupo_duplicado"
     );
     assert_eq!(lineas.len(), e.archivos.len() + 1);
     assert!(
-        lineas.iter().skip(1).all(|l| l.split(';').count() == 8),
-        "8 columnas en cada fila"
+        lineas.iter().skip(1).all(|l| l.split(';').count() == 10),
+        "10 columnas en cada fila"
     );
 
     let foto = lineas.iter().find(|l| l.contains("IMG_0002.JPG")).unwrap();
@@ -411,7 +411,7 @@ fn csv_con_nombres_complicados() {
     fs::write(raiz.join("el \"mejor\".doc"), "x").unwrap();
     let e = escanear(&raiz, &Opciones::default(), &AtomicU64::new(0)).unwrap();
     let mut out = Vec::new();
-    exportar::csv(&e, &mut out).unwrap();
+    exportar::csv(&e, None, &mut out).unwrap();
     let texto = String::from_utf8(out).unwrap();
     assert!(texto.contains("uno;dos.txt\";Documentos;"), "{texto}");
     assert!(texto.contains("canción ñandú.mp3;Música;"), "{texto}");
@@ -426,18 +426,18 @@ fn csv_con_nombres_complicados() {
 fn markdown_con_todas_las_secciones() {
     let (_d, e) = escanear_demo();
     let mut out = Vec::new();
-    exportar::markdown(&e, &mut out).unwrap();
+    exportar::markdown(&e, None, &mut out).unwrap();
     let md = String::from_utf8(out).unwrap();
     for esperado in [
         "# Informe de disco:",
-        "Escaneo de 30 archivos en",
+        "Escaneo de 42 archivos en",
         "## Por categoría",
-        "| Fotos | 4 | 1,0 MB |",
-        "| Instaladores | 3 |",
+        "| Fotos | 6 | 1,6 MB |",
+        "| Instaladores | 4 |",
         "## Más pesados por categoría",
         "### Videos",
         "## Proyectos de código (2)",
-        "## Revisar: datos de programas (3 archivos",
+        "## Revisar: datos de programas (4 archivos",
         "## Excluido por ser del sistema (6)",
         "| `Windows` | sistema Windows |",
     ] {
@@ -471,14 +471,14 @@ fn exportar_no_pisa_archivos_sin_permiso() {
     fs::write(&plan.csv, "viejo").unwrap();
 
     assert_eq!(plan.existentes(), vec![plan.csv.as_path()]);
-    assert!(exportar::escribir(&plan, &e, false).is_err());
+    assert!(exportar::escribir(&plan, &e, None, false).is_err());
     assert_eq!(fs::read_to_string(&plan.csv).unwrap(), "viejo");
     assert!(
         !plan.markdown.exists(),
         "si falla, no escribe ninguno de los dos"
     );
 
-    exportar::escribir(&plan, &e, true).unwrap();
+    exportar::escribir(&plan, &e, None, true).unwrap();
     assert_ne!(fs::read_to_string(&plan.csv).unwrap(), "viejo");
 }
 
@@ -491,7 +491,7 @@ fn exportar_crea_la_carpeta_de_destino() {
         &e,
         chrono::Local::now(),
     );
-    exportar::escribir(&plan, &e, false).unwrap();
+    exportar::escribir(&plan, &e, None, false).unwrap();
     assert!(plan.markdown.exists());
 }
 

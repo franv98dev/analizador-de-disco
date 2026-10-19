@@ -83,7 +83,12 @@ fn correr(
     terminal.draw(|f| ui::dibujar_clasificando(f, escaneo.archivos.len() as u64))?;
     let mut app = App::new(&escaneo, iconos);
     while !app.salir {
+        app.tick();
         terminal.draw(|f| ui::dibujar(f, &mut app))?;
+        // Mientras se buscan duplicados se redibuja solo, para mostrar el avance.
+        if app.busqueda.is_some() && !event::poll(Duration::from_millis(150))? {
+            continue;
+        }
         // En Windows llegan también los eventos de soltar la tecla: se ignoran.
         if let Event::Key(k) = event::read()?
             && k.kind == KeyEventKind::Press

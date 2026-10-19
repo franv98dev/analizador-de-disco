@@ -3,6 +3,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::borrable::{self, Motivo};
 use crate::categoria::Categoria;
 use crate::escaner::Escaneo;
 use crate::formato::{duracion, fecha, miles, porcentaje, relativa, tamano};
@@ -66,6 +67,31 @@ pub fn imprimir(e: &Escaneo, top: usize, out: &mut dyn Write) -> io::Result<()> 
                 )?;
             }
         }
+    }
+
+    let items = borrable::analizar(e, None);
+    let totales = borrable::totales(&items);
+    if !totales.is_empty() {
+        writeln!(
+            out,
+            "\nProbablemente borrable (sugerencias; no se borra nada)"
+        )?;
+        for m in Motivo::TODOS {
+            if let Some(t) = totales.get(&m) {
+                writeln!(
+                    out,
+                    "  {:<12} {:>11}  {:>8} arch.  {}",
+                    m.nombre(),
+                    tamano(t.bytes),
+                    miles(t.cantidad),
+                    m.explicacion()
+                )?;
+            }
+        }
+        writeln!(
+            out,
+            "  Para sumar las copias duplicadas: analizador duplicados <ruta>"
+        )?;
     }
 
     if !r.proyectos.is_empty() {

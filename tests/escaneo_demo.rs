@@ -36,22 +36,22 @@ fn cuenta_cada_categoria() {
     let (_dir, e) = escanear_demo(None);
     let r = Resumen::de(&e);
     let esperado = [
-        (Categoria::Fotos, 4),
-        (Categoria::Videos, 2),
+        (Categoria::Fotos, 6),  // 4 + una copia + un falso duplicado
+        (Categoria::Videos, 3), // 2 + una copia
         (Categoria::Musica, 2),
         (Categoria::Grabaciones, 2),
-        (Categoria::Documentos, 5), // 4 + el LEEME de la demo
-        (Categoria::Proyectos, 5),
+        (Categoria::Documentos, 8), // 4 + LEEME + 2 copias del CV + ~$ de Office
+        (Categoria::Proyectos, 6),  // 5 + node_modules
         (Categoria::Comprimidos, 2),
-        (Categoria::Instaladores, 3),
-        (Categoria::Otros, 2),
+        (Categoria::Instaladores, 4), // 3 + un portable
+        (Categoria::Otros, 5),        // 2 + .crdownload, .tmp y Thumbs.db
     ];
     for (c, n) in esperado {
         assert_eq!(r.categoria(c).cantidad, n, "cantidad de {}", c.nombre());
     }
     assert_eq!(
         r.categoria(Categoria::Fotos).bytes,
-        (300 + 250 + 120 + 400) * 1024
+        (300 + 250 + 120 + 400 + 300 + 300) * 1024
     );
 }
 
@@ -98,6 +98,7 @@ fn appdata_va_a_revisar_agrupado_por_programa() {
     let grupos = relativas(&e, r.revisar.iter().map(|g| g.ruta.to_path_buf()));
     let esperado: BTreeSet<String> = [
         "AppData/Local/Google",
+        "AppData/Local/Temp",
         "AppData/LocalLow/Juego",
         "AppData/Roaming/WhatsApp",
     ]
@@ -105,7 +106,7 @@ fn appdata_va_a_revisar_agrupado_por_programa() {
     .map(String::from)
     .collect();
     assert_eq!(grupos, esperado);
-    assert_eq!(r.revisar_total.cantidad, 3);
+    assert_eq!(r.revisar_total.cantidad, 4);
     // Lo de AppData no se mezcla con las categorías del usuario.
     assert_eq!(
         r.usuario.cantidad + r.revisar_total.cantidad,

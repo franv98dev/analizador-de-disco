@@ -7,14 +7,19 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 
+use crate::antiguedad;
+use crate::borrable::{self, Motivo};
 use crate::categoria::Categoria;
-use crate::escaner::{Archivo, Escaneo};
+use crate::duplicados::Duplicados;
+use crate::escaner::Escaneo;
 use crate::formato::{duracion, fecha, fecha_hora, miles, porcentaje, relativa, tamano};
 use crate::resumen::{Grupo, Resumen, mas_pesados};
 
 /// Cuántos archivos más pesados listar por categoría en el Markdown.
 const TOP_MARKDOWN: usize = 20;
 const MAX_ERRORES: usize = 50;
+/// Cuántas sugerencias de borrable y grupos de duplicados listar en el Markdown.
+const MAX_SUGERENCIAS: usize = 50;
 
 /// Lo que se va a escribir, para mostrarlo antes de confirmar.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,7 +56,13 @@ pub fn planificar(destino: &Path, e: &Escaneo, ahora: DateTime<Local>) -> Plan {
 }
 
 /// Escribe los dos archivos. Si `sobrescribir` es falso y alguno existe, falla sin tocar nada.
-pub fn escribir(plan: &Plan, e: &Escaneo, sobrescribir: bool) -> io::Result<()> {
+/// Los duplicados se incluyen solo si ya se buscaron (leen el contenido, son opcionales).
+pub fn escribir(
+    plan: &Plan,
+    e: &Escaneo,
+    dups: Option<&Duplicados>,
+    sobrescribir: bool,
+) -> io::Result<()> {
     if !sobrescribir && let Some(p) = plan.existentes().first() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -73,20 +84,30 @@ pub fn escribir(plan: &Plan, e: &Escaneo, sobrescribir: bool) -> io::Result<()> 
         o.open(ruta).map(BufWriter::new)
     };
     let mut md = abrir(&plan.markdown)?;
-    markdown(e, &mut md)?;
+    markdown(e, dups, &mut md)?;
     md.flush()?;
     let mut csv_out = abrir(&plan.csv)?;
-    csv(e, &mut csv_out)?;
+    csv(e, dups, &mut csv_out)?;
     csv_out.flush()
 }
 
 /// CSV separado por `;` y en UTF-8 con BOM, para que Excel en español lo abra con doble clic.
-pub fn csv(e: &Escaneo, out: &mut dyn Write) -> io::Result<()> {
+pub fn csv(e: &Escaneo, dups: Option<&Duplicados>, out: &mut dyn Write) -> io::Result<()> {
     out.write_all("\u{feff}".as_bytes())?;
-    out.write_all(b"ruta;categoria;zona;proyecto;carpeta_revisar;bytes;tamano;modificado\r\n")?;
-    let mut archivos: Vec<&Archivo> = e.archivos.iter().collect();
-    archivos.sort_by(|a, b| a.ruta.cmp(&b.ruta));
-    for a in archivos {
+    out.write_all(
+        b"ruta;categoria;zona;proyecto;carpeta_revisar;bytes;tamano;modificado;borrable;grupo_duplicado\r\n",
+    )?;
+    let motivos = borrable::por_archivo(e, dups);
+    let grupos = dups.map(Duplicados::por_archivo).unwrap_or_default();
+    let mut orden: Vec<usize> = (0..e.archivos.len()).collect();
+    orden.sort_by(|&a, &b| e.archivos[a].ruta.cmp(&e.archivos[b].ruta));
+    for i in orden {
+        let a = &e.archivos[i];
+        let grupo = match grupos.get(&(i as u32)) {
+            Some((g, true)) => format!("{} (conservar)", g + 1),
+            Some((g, false)) => (g + 1).to_string(),
+            None => String::new(),
+        };
         let campos = [
             a.ruta.display().to_string(),
             a.categoria.nombre().to_string(),
@@ -107,6 +128,11 @@ pub fn csv(e: &Escaneo, out: &mut dyn Write) -> io::Result<()> {
             a.tamano.to_string(),
             tamano(a.tamano),
             fecha_hora(a.modificado),
+            motivos[i]
+                .as_ref()
+                .map(|(m, _)| m.nombre().to_string())
+                .unwrap_or_default(),
+            grupo,
         ];
         let linea: Vec<String> = campos.iter().map(|c| campo_csv(c)).collect();
         out.write_all(linea.join(";").as_bytes())?;
@@ -124,7 +150,7 @@ pub fn campo_csv(s: &str) -> String {
     }
 }
 
-pub fn markdown(e: &Escaneo, out: &mut dyn Write) -> io::Result<()> {
+pub fn markdown(e: &Escaneo, dups: Option<&Duplicados>, out: &mut dyn Write) -> io::Result<()> {
     let r = Resumen::de(e);
     writeln!(
         out,
@@ -197,6 +223,10 @@ pub fn markdown(e: &Escaneo, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out)?;
     }
 
+    seccion_borrable(out, e, dups)?;
+    seccion_duplicados(out, e, dups)?;
+    seccion_antiguedad(out, e)?;
+
     if !r.proyectos.is_empty() {
         writeln!(out, "## Proyectos de código ({})\n", r.proyectos.len())?;
         tabla_grupos(out, &e.raiz, &r.proyectos)?;
@@ -251,6 +281,134 @@ pub fn markdown(e: &Escaneo, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out)?;
     }
     Ok(())
+}
+
+fn seccion_borrable(out: &mut dyn Write, e: &Escaneo, dups: Option<&Duplicados>) -> io::Result<()> {
+    let items = borrable::analizar(e, dups);
+    let totales = borrable::totales(&items);
+    writeln!(out, "## Probablemente borrable\n")?;
+    writeln!(
+        out,
+        "Son sugerencias: el programa no borra nada. Revisalas antes de decidir.\n"
+    )?;
+    writeln!(out, "| Motivo | Qué es | Archivos | Tamaño |")?;
+    writeln!(out, "|---|---|---:|---:|")?;
+    let mut total = crate::arbol::Suma::default();
+    for m in Motivo::TODOS {
+        let t = totales.get(&m).copied().unwrap_or_default();
+        total += t;
+        writeln!(
+            out,
+            "| {} | {} | {} | {} |",
+            m.nombre(),
+            m.explicacion(),
+            miles(t.cantidad),
+            tamano(t.bytes)
+        )?;
+    }
+    writeln!(
+        out,
+        "| **Total** | | **{}** | **{}** |\n",
+        miles(total.cantidad),
+        tamano(total.bytes)
+    )?;
+    if dups.is_none() {
+        writeln!(
+            out,
+            "Las copias duplicadas no están contadas: no se buscaron duplicados.\n"
+        )?;
+    }
+    if !items.is_empty() {
+        writeln!(out, "| Motivo | Tamaño | Archivos | Ruta |")?;
+        writeln!(out, "|---|---:|---:|---|")?;
+        for i in items.iter().take(MAX_SUGERENCIAS) {
+            writeln!(
+                out,
+                "| {} | {} | {} | {} |",
+                i.motivo.nombre(),
+                tamano(i.suma.bytes),
+                miles(i.suma.cantidad),
+                codigo(&relativa(&e.raiz, &i.ruta))
+            )?;
+        }
+        if items.len() > MAX_SUGERENCIAS {
+            writeln!(
+                out,
+                "\n… y {} más (están todas en el CSV).",
+                items.len() - MAX_SUGERENCIAS
+            )?;
+        }
+        writeln!(out)?;
+    }
+    Ok(())
+}
+
+fn seccion_duplicados(
+    out: &mut dyn Write,
+    e: &Escaneo,
+    dups: Option<&Duplicados>,
+) -> io::Result<()> {
+    writeln!(out, "## Duplicados\n")?;
+    let Some(d) = dups else {
+        writeln!(
+            out,
+            "No se buscaron. Para incluirlos: `analizador informe <ruta> --duplicados`, o la tecla `d` en la interfaz antes de exportar.\n"
+        )?;
+        return Ok(());
+    };
+    writeln!(
+        out,
+        "{} grupos, {} copias de más. Borrando las copias se liberan **{}**. Se leyeron {} en {} ({:.0} MB/s).\n",
+        miles(d.grupos.len() as u64),
+        miles(d.copias() as u64),
+        tamano(d.liberable()),
+        tamano(d.bytes_leidos),
+        duracion(d.duracion),
+        d.mb_por_segundo()
+    )?;
+    writeln!(
+        out,
+        "En cada grupo se sugiere conservar el más viejo (el primero).\n"
+    )?;
+    for g in d.grupos.iter().take(MAX_SUGERENCIAS) {
+        writeln!(
+            out,
+            "- **{}** liberables · {} copias de {}",
+            tamano(g.liberable()),
+            g.archivos.len(),
+            tamano(g.tamano)
+        )?;
+        for (i, &a) in g.archivos.iter().enumerate() {
+            let a = &e.archivos[a as usize];
+            let marca = if i == 0 { " (conservar)" } else { "" };
+            writeln!(out, "  - {}{marca}", codigo(&relativa(&e.raiz, &a.ruta)))?;
+        }
+    }
+    if d.grupos.len() > MAX_SUGERENCIAS {
+        writeln!(
+            out,
+            "\n… y {} grupos más (están todos en el CSV).",
+            d.grupos.len() - MAX_SUGERENCIAS
+        )?;
+    }
+    writeln!(out)
+}
+
+fn seccion_antiguedad(out: &mut dyn Write, e: &Escaneo) -> io::Result<()> {
+    let anios = antiguedad::por_anio(e.archivos.iter().filter(|a| a.revisar.is_none()));
+    writeln!(out, "## Antigüedad (última modificación)\n")?;
+    writeln!(out, "| Año | Archivos | Tamaño |")?;
+    writeln!(out, "|---|---:|---:|")?;
+    for (anio, s) in anios {
+        writeln!(
+            out,
+            "| {} | {} | {} |",
+            antiguedad::nombre(anio),
+            miles(s.cantidad),
+            tamano(s.bytes)
+        )?;
+    }
+    writeln!(out)
 }
 
 fn tabla_grupos(out: &mut dyn Write, raiz: &Path, grupos: &[Grupo]) -> io::Result<()> {
