@@ -1,0 +1,24 @@
+[package]
+name = "analizador-de-disco"
+version = "0.1.0"
+edition = "2024"
+description = "Escanea un disco y separa lo que creó una persona (fotos, videos, documentos, proyectos) de lo que es sistema o programas. Solo lectura."
+license = "MIT"
+repository = "https://github.com/franv98dev/analizador-de-disco"
+
+[[bin]]
+name = "analizador"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
