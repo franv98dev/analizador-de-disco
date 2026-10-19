@@ -4,7 +4,8 @@ Escanea el disco de una PC y separa **lo que creó una persona** (fotos, videos,
 grabaciones, proyectos) de lo que es **sistema o programas**. Sirve para decidir qué conservar
 y qué borrar antes de reciclar una máquina, por ejemplo para convertirla en un servidor Linux.
 
-- Un solo ejecutable, sin instalar nada (Windows x64 y Linux x64).
+- Un solo ejecutable, sin instalar nada (Windows 10/11 x64 y Linux x64). Se bajan de
+  [Releases](https://github.com/franv98dev/analizador-de-disco/releases).
 - **Solo lectura**: el escaneo nunca modifica ni borra nada.
 - Recorrido en paralelo y medición de velocidad (archivos/s), para comparar HDD y SSD.
 
@@ -185,6 +186,19 @@ de Windows (`Mis documentos`, `Application Data`) no se siguen, para no contar d
 y los archivos con punto sueltos ahí (`.bash_history`, `.gitconfig`) no son sistema: ahí hay partidas guardadas, perfiles de navegador, WhatsApp de escritorio.
 Se listan aparte, agrupadas por programa (`AppData\Roaming\WhatsApp`), para revisarlas a mano.
 
+## Descargar
+
+En [Releases](https://github.com/franv98dev/analizador-de-disco/releases) hay dos archivos, cada uno con su
+`.sha256` para verificarlo:
+
+- `analizador-windows-x64.exe`: Windows 10 u 11. Trae el runtime de C adentro (`crt-static`), así que no
+  hace falta el "Visual C++ Redistributable". Rust ya no soporta Windows 7 ni 8.
+- `analizador-linux-x64`: estático (musl), anda en cualquier distribución. `chmod +x analizador-linux-x64`.
+
+Los dos son **portables**: andan en cualquier CPU x64. Para compilar optimizado para una máquina en
+particular están `compilar-nativo.ps1` y `compilar-nativo.sh`, pero ese binario puede no arrancar en una
+CPU más vieja, y la medición de abajo muestra que no hace falta.
+
 ## Compilar y testear
 
 Hace falta [Rust](https://rustup.rs) (en Windows, también las herramientas de C++ de Visual Studio).
@@ -238,8 +252,8 @@ Go con Bubble Tea habría sido más simple de escribir, pero Rust rinde más en 
 | 2. Interfaz de dos paneles (ratatui) + informe Markdown/CSV | ✅ | Árbol navegable con tamaños, clasificación de la carpeta seleccionada, saltos de un panel al otro, exportación con vista previa |
 | 3. Duplicados y "probablemente borrable" | ✅ | Duplicados en tres pasadas, borrable con motivo, más pesados, antigüedad, todo en la interfaz y en el informe |
 | 4. Acciones: copiar/mover/`_para_borrar`, con confirmación y dry-run | ✅ | Ordenar por categoría y año (EXIF), `_para_borrar`, deshacer, copia verificada, marcar en la interfaz |
-| 5. Lectura del MFT en Windows | ⏳ | |
-| 6. Build optimizado y ejecutables para Windows y Linux | ⏳ | |
+| 5. Lectura del MFT en Windows | ⏸️ | Pendiente de medir en un HDD real: si el recorrido normal alcanza, no hace falta |
+| 6. Build optimizado y ejecutables para Windows y Linux | ✅ | `.exe` sin dependencias, Linux estático, CI en Windows y Linux, Releases automáticos |
 
 ### Fase 1: primeras mediciones
 
@@ -275,3 +289,22 @@ quedan afuera de la búsqueda de duplicados, así que los grupos serían algunos
 
 Probarlo con datos reales sacó a la luz falsos positivos que ahora tienen su test: el `node_modules`
 global de npm y el de programas instalados, el `.iso` de un juego para emulador y `Package Cache`.
+
+### Fase 6: ¿vale la pena `target-cpu=native`?
+
+Misma carpeta de usuario (1,07 millones de archivos), caché caliente, 3 corridas de cada uno:
+
+| Compilación | Corridas | Archivos/s |
+|---|---|---:|
+| Portable (cualquier x64) | 3,38 s · 3,37 s | ~318.000 |
+| `target-cpu=native` | 3,58 s · 3,35 s · 4,27 s | ~250.000–320.000 |
+
+No hay diferencia: la variación es ruido. Escanear depende del disco y del sistema de archivos, no de las
+instrucciones de la CPU, y BLAKE3 ya detecta solo las instrucciones disponibles cuando arranca. Por eso se
+distribuye solo la versión portable, que además no se cuelga en CPUs viejas. La primera corrida
+(caché frío) tardó 9,2 s: comparar HDD contra SSD hay que hacerlo después de reiniciar, o la segunda
+corrida mide la memoria y no el disco.
+
+La CI corre formato, clippy y los tests en **Windows y en Linux** en cada push, así el código que es
+distinto en cada sistema (cómo se detecta si dos rutas están en el mismo disco, las rutas de sistema)
+se prueba en los dos.

@@ -1,0 +1,4 @@
+# El runtime de C va adentro del .exe: en una PC sin el "Visual C++ Redistributable"
+# instalado (la de papá) anda igual, sin instalar nada.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

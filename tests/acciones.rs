@@ -92,6 +92,15 @@ fn ordenar(e: &Escaneo, destino: &Path, modo: Modo, dups: bool) -> acciones::Pla
     )
 }
 
+/// Una carpeta de sistema de verdad en cada sistema operativo.
+fn destino_de_sistema() -> &'static Path {
+    if cfg!(windows) {
+        Path::new(r"C:\Windows\Ordenado")
+    } else {
+        Path::new("/usr/local/Ordenado")
+    }
+}
+
 // ───────────────────────────── dry-run ─────────────────────────────
 
 #[test]
@@ -168,7 +177,7 @@ fn sin_buscar_duplicados_avisa_y_renombra_los_choques() {
 #[test]
 fn no_acepta_destinos_de_sistema() {
     let (_dir, e) = escanear_demo();
-    let plan = ordenar(&e, Path::new(r"C:\Windows\Ordenado"), Modo::Mover, false);
+    let plan = ordenar(&e, destino_de_sistema(), Modo::Mover, false);
     assert!(!plan.se_puede_ejecutar());
     assert!(acciones::ejecutar(&plan, &ProgresoAccion::default()).is_err());
 }
@@ -725,7 +734,7 @@ mod pantalla_accion {
     fn un_plan_imposible_no_ofrece_hacerlo() {
         let (_d, e) = escanear_demo();
         let mut app = App::new(&e, Iconos::Simples);
-        let plan = ordenar(&e, Path::new(r"C:\Windows\Ordenado"), Modo::Mover, false);
+        let plan = ordenar(&e, destino_de_sistema(), Modo::Mover, false);
         app.accion = Some(Accion::Confirmar(plan));
         let p = pantalla(&mut app, 120, 30);
         assert!(p.contains("No se puede"), "{p}");

@@ -406,9 +406,16 @@ fn problema_de_destino(destino: &Path) -> Option<String> {
             destino.display()
         ));
     }
+    // Sobre la ruta normalizada y no con `Path::ancestors`: así `C:\Windows\x` se reconoce
+    // igual en Linux (donde `\` no separa carpetas) y los tests andan en los dos.
     let sistema = Exclusiones::new(Path::new(""));
-    for a in destino.ancestors() {
-        if let Some(motivo) = sistema.motivo(a) {
+    let norm = exclusiones::normalizar(destino);
+    let prefijos = norm
+        .match_indices('/')
+        .map(|(i, _)| &norm[..i])
+        .chain(std::iter::once(norm.as_str()));
+    for a in prefijos {
+        if let Some(motivo) = sistema.motivo(Path::new(a)) {
             return Some(format!(
                 "{} no sirve como destino ({motivo})",
                 destino.display()

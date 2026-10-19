@@ -1,0 +1,84 @@
+# Al crear un tag v* (por ejemplo v1.0.0): tests, ejecutables para Windows y Linux, y Release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  compilar:
+    name: Compilar (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # El runtime de C va adentro del .exe (ver .cargo/config.toml): no hace falta instalar nada.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binario: analizador.exe
+            archivo: analizador-windows-x64.exe
+          # musl: estático, anda en cualquier distribución sin depender de sus librerías.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binario: analizador
+            archivo: analizador-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Herramientas de musl
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Tests
+        run: cargo test --release
+      - name: Compilar
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Preparar
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/${{ matrix.binario }}" "${{ matrix.archivo }}"
+          sha256sum "${{ matrix.archivo }}" > "${{ matrix.archivo }}.sha256"
+      - name: Probar el ejecutable
+        shell: bash
+        run: |
+          ./${{ matrix.archivo }} --version
+          ./${{ matrix.archivo }} demo --carpeta demo-ci --top 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archivo }}
+          path: |
+            ${{ matrix.archivo }}
+            ${{ matrix.archivo }}.sha256
+
+  publicar:
+    name: Publicar Release
+    needs: compilar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            analizador-windows-x64.exe
+            analizador-windows-x64.exe.sha256
+            analizador-linux-x64
+            analizador-linux-x64.sha256
+          body: |
+            Un solo ejecutable, sin instalar nada.
+
+            - **Windows 10/11 x64:** `analizador-windows-x64.exe`
+            - **Linux x64** (cualquier distribución): `analizador-linux-x64` (`chmod +x` antes de usarlo)
+
+            Para empezar: `analizador demo --ver`, después `analizador ver C:\` (o `ver /`).
+            El escaneo es de solo lectura; ordenar y `_para_borrar` muestran antes qué van a hacer.
