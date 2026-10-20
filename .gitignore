@@ -1,2 +1,6 @@
 /target
 *.pdb
+# Los ejecutables se publican en Releases, no van en el repo.
+*.exe
+analizador-linux-x64
+*.sha256
